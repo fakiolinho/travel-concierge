@@ -1,0 +1,8 @@
+.venv/
+.claude/
+.cache/
+.idea/
+logs/
+node_modules/
+cdk.out/
+.cli/

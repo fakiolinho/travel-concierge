@@ -203,12 +203,14 @@ uv run python tools/duffel.py             # Duffel normalizers
 uv run python agents/traveler_profile.py  # history summary
 ```
 
-Format before committing. Ruff for Python (config in `pyproject.toml`); `scripts/fmt_json.py` for `.json`
-(2 space indent) and `.jsonl` (one compact record per line, so it stays valid JSONL; read a record with `jq .`):
+Format before committing. Ruff for Python (`pyproject.toml`), Prettier for JSON (`.prettierrc.json`, pinned,
+run with npx so there is no package.json), and `scripts/fmt_jsonl.py` for JSONL, which Prettier cannot parse
+(one compact record per line keeps it valid JSONL; read a record with `jq .`):
 
 ```bash
 uv run ruff format .
-uv run python scripts/fmt_json.py           # --check to only list files
+npx prettier@3.9.9 --write "**/*.json"     # --check to only list files
+uv run python scripts/fmt_jsonl.py         # --check to only list files
 ```
 
 `scripts/seed_memory_sessions.py` asserts its matcher before running and fails on any cross traveler leak.
