@@ -50,5 +50,5 @@ Never invent amounts, compensation or exceptions. If no rule covers the question
 
 
 def run(question: str) -> str:
-    agent = Agent(model=common.model(), system_prompt=PROMPT, tools=[get_rule, fare_conditions], callback_handler=None)
+    agent = Agent(model=common.model("policy"), system_prompt=PROMPT, tools=[get_rule, fare_conditions], callback_handler=None)
     return str(agent(question))

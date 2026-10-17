@@ -46,7 +46,7 @@ def policy(question: str) -> str:
     return pol.run(question)
 
 
-PROMPT = """You are the Travel Desk of an airline contact center. Today is {today}.
+PROMPT = """You are the Travel Desk of an airline contact center. Now is {now} UTC; all Duffel timestamps are UTC.
 The caller is verified as {actor_id}. You only ever act for this traveler.
 Loop:
 1. Call traveler_profile first in a conversation and whenever you are about to say anything about the traveler's history.
@@ -63,8 +63,8 @@ Rules:
 
 def build(actor_id):
     common.start(actor_id)
-    return Agent(model=common.model(), tools=[traveler_profile, flight_ops, policy],
-                 system_prompt=PROMPT.format(today=dt.date.today(), actor_id=actor_id))
+    return Agent(model=common.model("desk"), tools=[traveler_profile, flight_ops, policy],
+                 system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"), actor_id=actor_id))
 
 
 def main():
@@ -73,7 +73,7 @@ def main():
     # ponytail: --actor stands in for caller verification. Upgrade: Runtime inbound auth / OTP verification (step 4).
     ap.add_argument("--actor", required=True, choices=actors or None)
     desk = build(ap.parse_args().actor)
-    print(f"Travel Desk ({common.MODEL_ID}). Empty line to quit.")
+    print(f"Travel Desk {common.MODELS}. Empty line to quit.")
     while (msg := input("\nyou> ").strip()):
         common.user_turn(msg)
         desk(msg)  # default callback handler streams the reply to stdout

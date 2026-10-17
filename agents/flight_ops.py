@@ -170,7 +170,7 @@ def add_bag(order_id: str, service_id: str, quantity: int = 1) -> dict:
     return common.gated("add_bag", (order_id, service_id, quantity), quote, execute)
 
 
-PROMPT = """You are Flight Ops at an airline service desk. Today is {today}.
+PROMPT = """You are Flight Ops at an airline service desk. Now is {now} UTC; all Duffel timestamps are UTC.
 You act on behalf of one verified traveler; their orders are the only ones you can see.
 - Every fact you report (prices, refunds, times, order ids, offer ids) must come verbatim from a tool result in this request. Never estimate.
 - change_order, cancel_order and add_bag are writes. Their first call returns status needs_confirmation with a quote: report the exact quote and stop. Call them again only when the request says the traveler explicitly confirmed that exact action.
@@ -179,7 +179,7 @@ You act on behalf of one verified traveler; their orders are the only ones you c
 
 
 def run(request: str) -> str:
-    agent = Agent(model=common.model(), system_prompt=PROMPT.format(today=dt.date.today()), callback_handler=None,
+    agent = Agent(model=common.model("flight_ops"), system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")), callback_handler=None,
                   tools=[search_flights, get_order, list_orders, seat_map, change_options, bag_options,
                          change_order, cancel_order, add_bag])
     return str(agent(request))

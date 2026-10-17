@@ -14,12 +14,16 @@ if (ROOT / ".env").exists():
         if sep and not k.lstrip().startswith("#"):
             os.environ.setdefault(k.strip(), v.strip())
 
-MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-opus-5-5")
+# Sized per job: the desk and Flight Ops hold conversations and multi step writes; Profile and Policy look things up.
+# Override any of them with MODEL_ID_<ROLE> in .env. Re-run evals before changing a default.
+MODELS = {"desk": "us.anthropic.claude-sonnet-5-5", "flight_ops": "us.anthropic.claude-sonnet-5-5",
+          "profile": "us.anthropic.claude-haiku-5-5", "policy": "us.anthropic.claude-haiku-5-5"}
+MODELS = {role: os.environ.get(f"MODEL_ID_{role.upper()}", m) for role, m in MODELS.items()}
 HISTORY = ROOT / "evals/fixtures/history.json"
 
 
-def model():
-    return BedrockModel(model_id=MODEL_ID, region_name=os.environ.get("AWS_REGION", "us-east-1"))
+def model(role):
+    return BedrockModel(model_id=MODELS[role], region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 
 # ponytail: one in-process session dict, single caller. Upgrade: Runtime session + AgentCore Memory (step 3).

@@ -46,7 +46,7 @@ Never infer habits beyond what the counts show."""
 
 
 def run(question: str) -> str:
-    agent = Agent(model=common.model(), system_prompt=PROMPT, tools=[get_history], callback_handler=None)
+    agent = Agent(model=common.model("profile"), system_prompt=PROMPT, tools=[get_history], callback_handler=None)
     return str(agent(question))
 
 

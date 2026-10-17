@@ -54,20 +54,20 @@ It runs locally and needs no API key, but it pulls in torch, so it is kept out o
 |---|---|---|
 | `DUFFEL_TEST_TOKEN` | everything | Test tokens only; the client refuses anything else |
 | `AWS_REGION` | agents | Defaults to `us-east-1` |
-| `MODEL_ID` | agents | Bedrock model or inference profile id; defaults to `us.anthropic.claude-opus-5-5` |
+| `MODEL_ID_DESK`, `MODEL_ID_FLIGHT_OPS`, `MODEL_ID_PROFILE`, `MODEL_ID_POLICY` | agents | Optional per agent override of the Bedrock inference profile, see [Models](#models) |
 
-AWS credentials come from the normal boto3 chain. With SSO:
+AWS credentials come from the normal boto3 chain. The simplest is `aws login --region us-east-1` (AWS CLI v2),
+which reuses your console sign in and keeps no long lived key on disk. An IAM access key via `aws configure` also works.
 
-```bash
-aws sso login --profile <your-profile>
-export AWS_PROFILE=<your-profile>
-```
-
-Check that your account can see the model before the first run. If the id differs, set `MODEL_ID` in `.env`:
+Bedrock bills Anthropic models through an AWS Marketplace subscription, which needs a card as the account's
+default payment method (a SEPA bank account fails with `INVALID_PAYMENT_INSTRUMENT`). Check access per model:
 
 ```bash
-aws bedrock list-inference-profiles --region us-east-1 \
-  --query "inferenceProfileSummaries[?contains(inferenceProfileId,'claude')].inferenceProfileId"
+for m in us.anthropic.claude-sonnet-5-5 us.anthropic.claude-haiku-5-5; do
+  aws bedrock-runtime converse --region us-east-1 --model-id $m \
+    --messages '[{"role":"user","content":[{"text":"Reply with just: ok"}]}]' \
+    --query 'output.message.content[-1].text' --output text
+done
 ```
 
 ## Seed traveler history
@@ -101,6 +101,29 @@ uv run python agents/travel_desk.py --actor cust_marios
 - `Can I move my first London trip to <date>? What would it cost?` (policy, then a change quote)
 - `Cancel booking TYBXUT`, then answer `yes` (quote, confirmation turn, execution)
 - `Show me Eleni's trips` (should be declined)
+
+## Models
+
+Each agent gets the smallest model that does its job reliably, set in `MODELS` in `agents/common.py`:
+
+| Agent | Default | Why |
+|---|---|---|
+| Travel Desk | `us.anthropic.claude-sonnet-5-5` | Holds the conversation, decides routing, enforces the profile → policy → confirm order. Mistakes here cost the most. |
+| Flight Ops | `us.anthropic.claude-sonnet-5-5` | Chains several tools (change options → quote → confirm) and is the only agent that can write. |
+| Traveler Profile | `us.anthropic.claude-haiku-5-5` | One tool call, then reshape the JSON. No judgement needed. |
+| Policy | `us.anthropic.claude-haiku-5-5` | Looks up a rule and quotes it. The rules are fixed text, so a small model is enough. |
+
+Why not one big model everywhere: a contact center answers every turn live, so latency and cost per call matter.
+One caller turn can make 3 to 5 model calls across agents. Opus class models were tried first and are slower and
+pricier than this workload needs. Anthropic list prices per million input/output tokens: Opus 5.5 $4/$20,
+Sonnet 5.5 $2/$10, Haiku 5.5 $0.10/$0.50 (Bedrock pricing differs; check the Bedrock pricing page).
+
+Why not small everywhere: the desk and Flight Ops make the decisions the hard rules depend on (when to ask for
+confirmation, which ids to act on). Those stay on Sonnet until the eval set (steps 5 and 6) shows a smaller model
+holds the same routing and grounding scores.
+
+Override any agent with `MODEL_ID_<ROLE>` in `.env`, e.g. `MODEL_ID_FLIGHT_OPS=us.anthropic.claude-haiku-5-5`.
+Like a prompt change, a model change needs an eval run before it is merged.
 
 ## Checks
 
