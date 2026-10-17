@@ -1,0 +1,17 @@
+# Local trace UI for the agents (Arize Phoenix). Start: docker compose up -d. UI: http://localhost:6006
+# The agents stream Strands' OpenTelemetry spans here when .env sets OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006
+services:
+  phoenix:
+    image: arizephoenix/phoenix:version-20.23.0
+    container_name: phoenix
+    restart: unless-stopped
+    ports:
+      - "6006:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - phoenix-data:/mnt/data
+
+volumes:
+  phoenix-data:
+    name: phoenix-data # keeps traces across upgrades and restarts

@@ -203,9 +203,12 @@ being written). Two local options, both free:
 **Arize Phoenix** (recommended: built for agent traces, shows prompts, outputs, tool calls and tokens per step):
 
 ```bash
-uvx --from arize-phoenix phoenix serve                       # UI on http://localhost:6006, leave it running
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006 uv run python agents/travel_desk.py --actor cust_marios
+docker compose up -d        # Phoenix from compose.yaml: pinned image, restarts on its own, traces kept in a volume
 ```
+
+Then set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006` in `.env` and every desk run shows up live at
+http://localhost:6006 (project "default"). Upgrade by changing the image tag in `compose.yaml` and running
+`docker compose up -d` again. Without Docker: `uvx --from arize-phoenix phoenix serve`.
 
 **Jaeger** (plain timing waterfall, needs Docker):
 
