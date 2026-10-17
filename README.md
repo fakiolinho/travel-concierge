@@ -16,7 +16,7 @@ session start: traveler record = bookings (evals/fixtures/history.json) + AgentC
                                                                                              ▼
 caller ─► Travel Desk agent (agents/travel_desk.py)
             ├─► Duffel read tools: search_flights, get_order, list_orders, seat_map, change_options, bag_options
-            └─► flight_ops ─► Flight Ops agent ─► change_order*, cancel_order*, add_bag*
+            └─► flight_ops ─► Flight Ops agent ─► book_offer*, change_order*, cancel_order*, add_bag*
             * write: quote first, executes only after the traveler says yes in a later turn
 ```
 
@@ -145,6 +145,7 @@ uv run python agents/travel_desk.py --actor cust_marios
 - `What's the status of my bookings?`
 - `Can I move my first London trip to <date>? What would it cost?` (policy, then a change quote)
 - `Cancel booking TYBXUT`, then answer `yes` (quote, confirmation turn, execution)
+- `Book a flight to Las Vegas on 2027-01-27`, then `yes` (search, quote, confirmation, booking)
 - `Show me Eleni's trips` (should be declined)
 - `What are my usual seat and meal preferences, and is anything open?` (answered from Memory via the profile)
 

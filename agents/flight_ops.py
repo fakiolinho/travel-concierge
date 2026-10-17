@@ -62,7 +62,7 @@ def get_order(order_id: str) -> dict:
 @tool
 def list_orders() -> list:
     """Live status of all of the verified traveler's orders."""
-    return [duffel.norm_order(duffel.call("GET", f"/orders/{o['order_id']}")) for o in common.history()]
+    return [duffel.norm_order(duffel.call("GET", f"/orders/{o['order_id']}")) for o in common.orders()]
 
 
 @tool
@@ -191,6 +191,53 @@ def cancel_order(order_id: str) -> dict:
     return common.gated("cancel_order", order_id, quote, execute)
 
 
+PAX_FIELDS = ("title", "gender", "given_name", "family_name", "born_on", "email", "phone_number")
+
+
+def traveler_identity():
+    """Passenger details for a new booking, copied in code from the traveler's own past booking, so the model
+    never sees or supplies personal data. ponytail: newest seeded order. Upgrade: customer profile service."""
+    o = duffel.call("GET", f"/orders/{common.history()[-1]['order_id']}")
+    return {k: o["passengers"][0][k] for k in PAX_FIELDS}
+
+
+@tool
+def book_offer(offer_id: str) -> dict:
+    """WRITE. Book a flight offer from search_flights for the verified traveler (one passenger). First call
+    returns the live price quote that needs the traveler's explicit yes; only a call after that confirmation books.
+
+    Args:
+        offer_id: offer id from search_flights
+    """
+
+    def quote():
+        o = duffel.call("GET", f"/offers/{offer_id}")
+        if len(o["passengers"]) != 1:
+            return {"error": "the desk can only book offers for a single passenger"}
+        n = duffel.norm_offer(o)
+        return {"offer_id": offer_id, "passenger_id": o["passengers"][0]["id"], "total": n["total"],
+                "currency": n["currency"], "expires_at": n["expires_at"], "slices": n["slices"],
+                "conditions": n["conditions"]}  # fmt: skip
+
+    def execute(q):
+        order = duffel.call("POST", "/orders", {
+            "type": "instant",
+            "selected_offers": [offer_id],
+            "payments": [{"type": "balance", "amount": q["total"], "currency": q["currency"]}],
+            "passengers": [{"id": q["passenger_id"], **traveler_identity()}],
+            "metadata": {"actor_id": common.S["actor_id"]},
+        })  # fmt: skip
+        n = duffel.norm_order(order)
+        seg = n["slices"][0]["segments"][0]
+        common.add_booked({"order_id": n["order_id"], "booking_reference": n["booking_reference"],
+                           "origin": n["slices"][0]["origin"], "destination": n["slices"][0]["destination"],
+                           "departure": seg["departing_at"], "airline": seg["carrier"], "cabin": "economy",
+                           "total": n["total"], "currency": n["currency"]})  # fmt: skip
+        return {"booked": True, "order": n}
+
+    return common.gated("book_offer", offer_id, quote, execute)
+
+
 @tool
 def add_bag(order_id: str, service_id: str, quantity: int = 1) -> dict:
     """WRITE. Add a bag service from bag_options to an order. First call returns a price quote that needs
@@ -233,7 +280,8 @@ def add_bag(order_id: str, service_id: str, quantity: int = 1) -> dict:
 READ_TOOLS = [search_flights, get_order, list_orders, seat_map, change_options, bag_options]
 
 PROMPT = """You are Flight Ops at an airline service desk. Now is {now} UTC. You make changes to one verified
-traveler's bookings: change_order, cancel_order, add_bag. Call exactly the write the request names, with its ids.
+traveler's bookings: book_offer, change_order, cancel_order, add_bag. Call exactly the write the request names,
+with its ids.
 The first call returns status needs_confirmation with a quote: report the exact quote and stop. Call again only
 when the request says the traveler explicitly confirmed that exact action. Report amounts and ids verbatim from the
 tool result in one or two lines. Never estimate."""
@@ -243,6 +291,6 @@ def run(request: str) -> str:
     agent = common.agent(
         "flight_ops",
         system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")),
-        tools=[get_order, change_order, cancel_order, add_bag],
+        tools=[get_order, book_offer, change_order, cancel_order, add_bag],
     )
     return str(agent(request))

@@ -185,9 +185,31 @@ def history(actor_id=None):
     return json.loads(HISTORY.read_text()).get(actor_id or S["actor_id"], [])
 
 
+# Orders booked through the desk. Kept apart from history.json so the seeded travel history (eval ground truth)
+# does not change while testing. ponytail: local file. Upgrade: ownership from Duffel order metadata.actor_id,
+# checked in the Gateway Lambda (step 4).
+BOOKED = ROOT / "evals/fixtures/booked.json"
+
+
+def booked(actor_id=None):
+    return json.loads(BOOKED.read_text()).get(actor_id or S["actor_id"], []) if BOOKED.exists() else []
+
+
+def add_booked(entry, actor_id=None):
+    data = json.loads(BOOKED.read_text()) if BOOKED.exists() else {}
+    data.setdefault(actor_id or S["actor_id"], []).append(entry)
+    BOOKED.write_text(json.dumps(data, indent=2))
+
+
+def orders(actor_id=None):
+    """Every order the actor owns: seeded history plus bookings made at the desk."""
+    return history(actor_id) + booked(actor_id)
+
+
 def owned(order_id):
-    # ponytail: ownership = order id is in the actor's fixture. Upgrade: Duffel order metadata.actor_id + Cedar.
-    if order_id not in {o["order_id"] for o in history()}:
+    # ponytail: ownership = order id is in the actor's fixture or desk bookings. Upgrade: Duffel order
+    # metadata.actor_id checked in the Gateway Lambda + Cedar (step 4).
+    if order_id not in {o["order_id"] for o in orders()}:
         raise ValueError(f"order {order_id} not found for this traveler")
 
 
@@ -253,4 +275,19 @@ if __name__ == "__main__":
     note_expiry([{"expires_at": "2026-10-18T10:00:00Z"}, {"expires_at": "2026-10-18T09:00:00Z"}, {}])
     assert S["expires"] == dt.datetime(2026, 10, 18, 9, tzinfo=dt.timezone.utc).timestamp()
     CACHE.unlink()
+
+    BOOKED = Path(os.environ.get("TMPDIR", "/tmp")) / "travel_concierge_booked_check.json"
+    BOOKED.unlink(missing_ok=True)
+    history = lambda actor_id=None: [{"order_id": "ord_seed"}] if (actor_id or S["actor_id"]) == "cust_a" else []
+    start("cust_a")
+    add_booked({"order_id": "ord_new"})
+    add_booked({"order_id": "ord_other"}, actor_id="cust_b")
+    assert [o["order_id"] for o in orders()] == ["ord_seed", "ord_new"], "seed history + own desk bookings"
+    owned("ord_new")
+    try:
+        owned("ord_other")
+        raise AssertionError("another actor's booking must not be owned")
+    except ValueError:
+        pass
+    BOOKED.unlink()
     print("common: ok")
