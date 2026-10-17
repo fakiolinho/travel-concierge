@@ -8,25 +8,19 @@
       {
         "userPreferenceMemoryStrategy": {
           "name": "preferences",
-          "namespaceTemplates": [
-            "/users/{actorId}/preferences/"
-          ]
+          "namespaceTemplates": ["/users/{actorId}/preferences/"]
         }
       },
       {
         "semanticMemoryStrategy": {
           "name": "facts",
-          "namespaceTemplates": [
-            "/users/{actorId}/facts/"
-          ]
+          "namespaceTemplates": ["/users/{actorId}/facts/"]
         }
       },
       {
         "summaryMemoryStrategy": {
           "name": "summaries",
-          "namespaceTemplates": [
-            "/summaries/{actorId}/{sessionId}/"
-          ]
+          "namespaceTemplates": ["/summaries/{actorId}/{sessionId}/"]
         }
       }
     ]
