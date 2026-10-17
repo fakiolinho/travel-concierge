@@ -52,7 +52,14 @@ def setup_tracing():
     # Runtime via an OTLP exporter, PII redaction via Guardrails (step 4).
     LOG_DIR.mkdir(exist_ok=True)
     path = LOG_DIR / f"traces-{dt.date.today()}.jsonl"
-    StrandsTelemetry().setup_console_exporter(out=path.open("a"), formatter=lambda s: s.to_json(indent=None) + "\n")
+    telemetry = StrandsTelemetry()
+    telemetry.setup_console_exporter(out=path.open("a"), formatter=lambda s: s.to_json(indent=None) + "\n")
+    # Also stream spans to a trace UI (Phoenix, Jaeger, ...) when the standard OTel endpoint variable is set.
+    if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        import atexit
+
+        telemetry.setup_otlp_exporter()
+        atexit.register(telemetry.tracer_provider.force_flush)  # batched exporter: send the last spans on exit
     return path
 
 
