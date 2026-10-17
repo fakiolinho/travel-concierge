@@ -31,7 +31,8 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 - Lazy senior dev: stdlib first, minimal deps, no abstractions nobody asked for, fewest files.
 - Mark shortcuts with `# ponytail:` naming the ceiling and the upgrade path.
 - Non trivial logic leaves one runnable assert based check behind.
-- Format with `uv run ruff format .` before committing (config in pyproject.toml, line length 120).
+- Format before committing: `uv run ruff format .` for Python (config in pyproject.toml, line length 120) and
+  `uv run python scripts/fmt_json.py` for .json (2 space indent) and .jsonl (one compact record per line).
 
 ## Commands
 - `uv sync` install (`uv sync --group evals` adds Strands Decider + torch)

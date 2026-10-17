@@ -203,10 +203,12 @@ uv run python tools/duffel.py             # Duffel normalizers
 uv run python agents/traveler_profile.py  # history summary
 ```
 
-Format the code before committing (Ruff, config in `pyproject.toml`):
+Format before committing. Ruff for Python (config in `pyproject.toml`); `scripts/fmt_json.py` for `.json`
+(2 space indent) and `.jsonl` (one compact record per line, so it stays valid JSONL; read a record with `jq .`):
 
 ```bash
 uv run ruff format .
+uv run python scripts/fmt_json.py           # --check to only list files
 ```
 
 `scripts/seed_memory_sessions.py` asserts its matcher before running and fails on any cross traveler leak.
