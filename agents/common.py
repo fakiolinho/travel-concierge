@@ -29,13 +29,29 @@ HISTORY = ROOT / "evals/fixtures/history.json"
 MEMORY_ID = os.environ.get("MEMORY_ID", "")  # empty = run without AgentCore Memory
 
 
+GUARDRAIL = {"id": os.environ.get("GUARDRAIL_ID", ""), "version": os.environ.get("GUARDRAIL_VERSION", "")}
+
+
 def model(role):
     # Bedrock prompt caching: reuses the system prompt, tool specs and earlier turns between calls. Faster first
     # token and cheaper input on long conversations; prefixes under the model's minimum size are silently not cached.
+    guard = {}
+    if GUARDRAIL["id"]:
+        # Bedrock Guardrail (PII block/mask, visa and medical denied), defined in agentcore/cdk/lib/cdk-stack.ts.
+        # Async: the answer streams while the guardrail checks it, and is redacted if it intervenes, so the
+        # guardrail adds no time to a turn. Only the latest message is checked, not the whole history each call.
+        guard = dict(
+            guardrail_id=GUARDRAIL["id"],
+            guardrail_version=GUARDRAIL["version"],
+            guardrail_stream_processing_mode="async",
+            guardrail_latest_message=True,
+            guardrail_trace="enabled",
+        )
     return BedrockModel(
         model_id=MODELS[role],
         region_name=os.environ.get("AWS_REGION", "us-east-1"),
         cache_config=CacheConfig(strategy="auto"),
+        **guard,
     )
 
 
