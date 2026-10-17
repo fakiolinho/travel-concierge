@@ -2,6 +2,7 @@
 
 Usage: uv run python agents/travel_desk.py --actor cust_marios
 """
+
 import argparse, datetime as dt, json
 
 from strands import Agent, tool
@@ -63,8 +64,11 @@ Rules:
 
 def build(actor_id):
     common.start(actor_id)
-    return Agent(model=common.model("desk"), tools=[traveler_profile, flight_ops, policy],
-                 system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"), actor_id=actor_id))
+    return Agent(
+        model=common.model("desk"),
+        tools=[traveler_profile, flight_ops, policy],
+        system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"), actor_id=actor_id),
+    )
 
 
 def main():
@@ -74,7 +78,7 @@ def main():
     ap.add_argument("--actor", required=True, choices=actors or None)
     desk = build(ap.parse_args().actor)
     print(f"Travel Desk {common.MODELS}. Empty line to quit.")
-    while (msg := input("\nyou> ").strip()):
+    while msg := input("\nyou> ").strip():
         common.user_turn(msg)
         desk(msg)  # default callback handler streams the reply to stdout
         print()

@@ -1,4 +1,5 @@
 """Shared bits for the local run: model factory, session state, fixture history, write confirmation gate."""
+
 import json, os, re, sys
 from pathlib import Path
 
@@ -16,8 +17,12 @@ if (ROOT / ".env").exists():
 
 # Sized per job: the desk and Flight Ops hold conversations and multi step writes; Profile and Policy look things up.
 # Override any of them with MODEL_ID_<ROLE> in .env. Re-run evals before changing a default.
-MODELS = {"desk": "us.anthropic.claude-sonnet-5-5", "flight_ops": "us.anthropic.claude-sonnet-5-5",
-          "profile": "us.anthropic.claude-haiku-5-5", "policy": "us.anthropic.claude-haiku-5-5"}
+MODELS = {
+    "desk": "us.anthropic.claude-sonnet-5-5",
+    "flight_ops": "us.anthropic.claude-sonnet-5-5",
+    "profile": "us.anthropic.claude-haiku-5-5",
+    "policy": "us.anthropic.claude-haiku-5-5",
+}
 MODELS = {role: os.environ.get(f"MODEL_ID_{role.upper()}", m) for role, m in MODELS.items()}
 HISTORY = ROOT / "evals/fixtures/history.json"
 
@@ -73,8 +78,11 @@ def gated(action, key, quote, execute):
         if "error" in q:
             return q
         p = S["pending"][k] = {"turn": S["turn"], "quote": q}
-    return {"status": "needs_confirmation", "quote": p["quote"],
-            "next": "Read this quote to the traveler and ask for an explicit yes. Call again only after they confirm."}
+    return {
+        "status": "needs_confirmation",
+        "quote": p["quote"],
+        "next": "Read this quote to the traveler and ask for an explicit yes. Call again only after they confirm.",
+    }
 
 
 if __name__ == "__main__":

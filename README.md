@@ -135,6 +135,12 @@ uv run python tools/duffel.py             # Duffel normalizers
 uv run python agents/traveler_profile.py  # history summary
 ```
 
+Format the code before committing (Ruff, config in `pyproject.toml`):
+
+```bash
+uv run ruff format .
+```
+
 ## Layout
 
 ```
