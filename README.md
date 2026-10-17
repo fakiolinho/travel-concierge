@@ -193,6 +193,29 @@ jq -c 'select(.attributes["session.id"]=="desk-<id>") | [.start_time, .name, .pa
 
 In step 4 the same spans go to AgentCore Observability (CloudWatch) instead of a file.
 
+### Reviewing traces in a UI
+
+The spans are standard OpenTelemetry with the GenAI conventions (`gen_ai.*`), emitted by Strands itself. To browse
+them, set `OTEL_EXPORTER_OTLP_ENDPOINT` and the desk also streams every span to that endpoint (the file keeps
+being written). Two local options, both free:
+
+**Arize Phoenix** (recommended: built for agent traces, shows prompts, outputs, tool calls and tokens per step):
+
+```bash
+uvx --from arize-phoenix phoenix serve                       # UI on http://localhost:6006, leave it running
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006 uv run python agents/travel_desk.py --actor cust_marios
+```
+
+**Jaeger** (plain timing waterfall, needs Docker):
+
+```bash
+docker run --rm -p 16686:16686 -p 4318:4318 jaegertracing/jaeger:2.10.0   # UI on http://localhost:16686
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 uv run python agents/travel_desk.py --actor cust_marios
+```
+
+Only runs made with the variable set show up; the JSONL file is in the console exporter's format, which these
+tools do not import. Spans are tagged with `session.id`, `actor.id` and `agent.role` for filtering.
+
 ## Checks
 
 Each module with non trivial logic has an assert based self check that needs no network and no AWS:
