@@ -4,14 +4,16 @@ A multi agent airline service desk on Amazon Bedrock AgentCore. A Travel Desk or
 request to three specialist agents (Flight Ops, Traveler Profile, Policy), books against Duffel in test mode,
 and is graded by layered evals. `PLAN.md` has the full design and the step order.
 
-**Status: step 2 of 6.** The agents run locally against Duffel directly. Gateway, Cedar, Guardrails, Memory and
-evals come in later steps (see [Roadmap](#roadmap)).
+**Status: step 3 of 6.** The agents run locally against Duffel directly, with AgentCore Memory for traveler
+preferences, facts and session summaries. Gateway, Cedar, Guardrails and evals come in later steps
+(see [Roadmap](#roadmap)).
 
 ## How it works
 
 ```
 caller ─► Travel Desk (agents/travel_desk.py)
-            ├─► traveler_profile ─► Traveler Profile agent ─► get_history (evals/fixtures/history.json)
+            ├─► traveler_profile ─► Traveler Profile agent ─► get_history: bookings (evals/fixtures/history.json)
+            │                                                  + AgentCore Memory (preferences, facts, summaries)
             ├─► flight_ops       ─► Flight Ops agent ─► Duffel: search, orders, seats, change/bag options,
             │                                          change_order*, cancel_order*, add_bag*
             └─► policy           ─► Policy agent ─► desk rules + order fare conditions
@@ -29,6 +31,8 @@ What the code enforces, regardless of what the model decides:
 | A write runs only after a later user turn whose text starts with an explicit yes | `common.gated` |
 | Tools only see orders that belong to the verified actor | `common.owned`, `common.history` |
 | The profile tool takes no actor argument, so it cannot read another traveler | `traveler_profile.get_history` |
+| Memory is read only under the session actor's namespaces, and stray records are dropped | `common.memory_records` |
+| The desk persists conversations to Memory but never retrieves from it directly, so history comes only via the profile tool | `travel_desk.memory_session` |
 | Flight Ops refuses until Traveler Profile has been called in the session | `travel_desk.flight_ops` |
 | Models never see raw Duffel JSON or the Duffel token | `tools/duffel.py` (`norm_*`) |
 
@@ -54,6 +58,7 @@ It runs locally and needs no API key, but it pulls in torch, so it is kept out o
 |---|---|---|
 | `DUFFEL_TEST_TOKEN` | everything | Test tokens only; the client refuses anything else |
 | `AWS_REGION` | agents | Defaults to `us-east-1` |
+| `MEMORY_ID` | agents | AgentCore Memory id printed by `scripts/create_memory.py`. Empty runs without Memory |
 | `MODEL_ID_DESK`, `MODEL_ID_FLIGHT_OPS`, `MODEL_ID_PROFILE`, `MODEL_ID_POLICY` | agents | Optional per agent override of the Bedrock inference profile, see [Models](#models) |
 
 AWS credentials come from the normal boto3 chain. The simplest is `aws login --region us-east-1` (AWS CLI v2),
@@ -88,6 +93,42 @@ This books 15 to 20 real Duffel Airways (`ZZ`) test orders for three synthetic t
 Run it once. Running it again books a new set of orders and overwrites the fixture. Duffel test mode cannot
 book in the past, so the "history" is dated in the future. The profile agent therefore leaves dates out.
 
+## Memory
+
+One AgentCore Memory resource, defined in `agentcore.json` (versioned) with three strategies:
+
+| Strategy | Namespace | Feeds |
+|---|---|---|
+| UserPreference | `/users/{actorId}/preferences/` | `preferences` in the profile |
+| Semantic | `/users/{actorId}/facts/` | `facts` in the profile |
+| Summary | `/summaries/{actorId}/{sessionId}/` | `recent_session_summaries`, from which the profile derives `open_issues` |
+
+```bash
+uv run python scripts/create_memory.py          # creates or reuses TravelConciergeMemory, prints MEMORY_ID=...
+# put that line in .env
+uv run python scripts/seed_memory_sessions.py   # 12 scripted past sessions per traveler, then recall + isolation
+```
+
+The seeded sessions are built from templates over `evals/ground_truth/personas.json`: five facts per traveler
+(seat, meal, airport or cabin, a personal fact, one open issue), each repeated in 3 to 5 sessions. No LLM is
+involved, so the input is the same on every run, and sessions already seeded are skipped. Extraction is
+asynchronous: records appeared about 2 minutes after seeding. Rerun with `--measure-only` to check again later.
+
+Measured on 2026-10-18 (fraction of the 5 persona facts found in each strategy's records):
+
+| Traveler | Preferences | Facts | Summaries | Any strategy |
+|---|---|---|---|---|
+| `cust_marios` | 3/5 | 5/5 | 5/5 | 100% |
+| `cust_eleni` | 4/5 | 5/5 | 5/5 | 100% |
+| `cust_nikos` | 4/5 | 5/5 | 5/5 | 100% |
+
+The preference extractor keeps only preferences (seat, meal, timing), so facts and open issues land in the other
+two strategies, as intended. Isolation check: no traveler's persona fact appears in another traveler's
+namespaces, either by listing or by semantic search. The script fails if one does.
+
+Every desk conversation is also saved as a session (`desk-<uuid>`) for the current traveler, so the extractors keep
+learning from real calls.
+
 ## Run the desk
 
 ```bash
@@ -101,6 +142,7 @@ uv run python agents/travel_desk.py --actor cust_marios
 - `Can I move my first London trip to <date>? What would it cost?` (policy, then a change quote)
 - `Cancel booking TYBXUT`, then answer `yes` (quote, confirmation turn, execution)
 - `Show me Eleni's trips` (should be declined)
+- `What are my usual seat and meal preferences, and is anything open?` (answered from Memory via the profile)
 
 ## Models
 
@@ -141,17 +183,24 @@ Format the code before committing (Ruff, config in `pyproject.toml`):
 uv run ruff format .
 ```
 
+`scripts/seed_memory_sessions.py` asserts its matcher before running and fails on any cross traveler leak.
+
 ## Layout
 
 ```
 agents/
   travel_desk.py       orchestrator + REPL
   flight_ops.py        Duffel read and write tools
-  traveler_profile.py  history summary (Memory joins in step 3)
+  traveler_profile.py  bookings summary + Memory records
   policy.py            desk rules + fare conditions
-  common.py            model factory, session, ownership, confirmation gate
+  common.py            model factory, session, ownership, confirmation gate, Memory reads
 tools/duffel.py        Duffel client + normalizers
-scripts/seed_duffel_history.py
+scripts/
+  seed_duffel_history.py   book past orders, write the fixture
+  create_memory.py         create or reuse the Memory resource from agentcore.json
+  seed_memory_sessions.py  seed sessions, measure recall and isolation
+agentcore.json         infra config: Memory resource and strategies
+evals/ground_truth/    versioned ground truth (personas.json)
 evals/fixtures/        generated, gitignored
 PLAN.md                design and step order
 CLAUDE.md              working rules for this repo
@@ -160,7 +209,7 @@ CLAUDE.md              working rules for this repo
 Shortcuts are marked `# ponytail:` in the code, each naming its limit and upgrade path:
 `grep -rn "ponytail:" agents tools scripts`.
 
-## Known limits (step 2)
+## Known limits
 
 - Search returns Duffel Airways (`ZZ`) offers only, so results are reproducible. Schedules and prices are not
   realistic.
@@ -168,12 +217,14 @@ Shortcuts are marked `# ponytail:` in the code, each naming its limit and upgrad
 - Policy rules are inline text in `agents/policy.py`, not a knowledge base yet.
 - One caller per process. The session is a module level dict.
 - Confirmation is detected with a regex on the start of the user's message.
+- The profile lists all of a traveler's Memory records rather than searching them, which is fine at about
+  60 records per traveler. Memory infra is created by a script reading `agentcore.json`, not by CDK yet.
 
 ## Roadmap
 
 1. ~~Duffel test account + seeded history~~
 2. ~~Strands agents locally, Duffel direct~~
-3. AgentCore Memory (UserPreference, Semantic, Summary) + session manager + seeded sessions
+3. ~~AgentCore Memory (UserPreference, Semantic, Summary) + session manager + seeded sessions~~
 4. Duffel tools behind AgentCore Gateway, Cedar (default deny, writes only for Flight Ops), Bedrock Guardrails,
    deploy to Runtime (`agentcore configure -e agents/travel_desk.py && agentcore launch`)
 5. Eval dataset (~150 cases) + ground truth

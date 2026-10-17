@@ -25,10 +25,49 @@ MODELS = {
 }
 MODELS = {role: os.environ.get(f"MODEL_ID_{role.upper()}", m) for role, m in MODELS.items()}
 HISTORY = ROOT / "evals/fixtures/history.json"
+MEMORY_ID = os.environ.get("MEMORY_ID", "")  # empty = run without AgentCore Memory
 
 
 def model(role):
     return BedrockModel(model_id=MODELS[role], region_name=os.environ.get("AWS_REGION", "us-east-1"))
+
+
+def namespaces(actor_id):
+    """Memory namespaces of one actor, matching agentcore.json. The trailing slash keeps cust_a from matching cust_ab."""
+    return {
+        "preferences": f"/users/{actor_id}/preferences/",
+        "facts": f"/users/{actor_id}/facts/",
+        "summaries": f"/summaries/{actor_id}/",
+    }
+
+
+def memory_records(actor_id, limit=50):
+    """Long term records of one actor, newest first, grouped by strategy."""
+    import boto3
+
+    # ponytail: list every record by namespace prefix, no semantic search. Upgrade: retrieve_memory_records with the
+    # desk's question as query once an actor has more records than fit in a prompt.
+    c = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    out = {}
+    for kind, ns in namespaces(actor_id).items():
+        recs, token = [], None
+        while len(recs) < limit:
+            # namespacePath, not namespace: in practice `namespace` only matches exactly, so per session summary
+            # namespaces (/summaries/{actor}/{session}/) are only reachable hierarchically.
+            r = c.list_memory_records(
+                memoryId=MEMORY_ID, namespacePath=ns, maxResults=100, **({"nextToken": token} if token else {})
+            )
+            # belt and braces: drop anything whose namespace is not under this actor's prefix
+            recs += [
+                x
+                for x in r.get("memoryRecordSummaries", [])
+                if all(n.startswith(ns) for n in x.get("namespaces", [ns]))
+            ]
+            if not (token := r.get("nextToken")):
+                break
+        recs.sort(key=lambda x: x.get("createdAt") or 0, reverse=True)
+        out[kind] = [x["content"]["text"] for x in recs[:limit]]
+    return out
 
 
 # ponytail: one in-process session dict, single caller. Upgrade: Runtime session + AgentCore Memory (step 3).

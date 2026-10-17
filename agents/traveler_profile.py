@@ -42,22 +42,31 @@ def summarize(actor_id, trips):
             }
             for t in trips
         ],
-        "preferences": [],  # step 3: AgentCore Memory UserPreference
-        "open_issues": [],  # step 3: AgentCore Memory Summary
+        "preferences": [],  # filled from AgentCore Memory by get_history
+        "facts": [],
+        "recent_session_summaries": [],
     }
 
 
 @tool
 def get_history() -> dict:
-    """The verified traveler's structured history: routes, airports, airlines, cabins, orders, preferences."""
-    return summarize(common.S["actor_id"], common.history())
+    """The verified traveler's record: routes, airports, airlines, cabins, orders (from bookings) plus preferences,
+    facts and recent session summaries (from AgentCore Memory)."""
+    actor = common.S["actor_id"]  # the session's verified actor, never a model supplied id
+    record = summarize(actor, common.history())
+    if common.MEMORY_ID:
+        m = common.memory_records(actor)
+        record.update(preferences=m["preferences"], facts=m["facts"], recent_session_summaries=m["summaries"][:5])
+    return record
 
 
 PROMPT = """You are Traveler Profile at an airline service desk. Answer the desk's question about the
 verified traveler using only get_history. Call it every time. Return compact JSON with the keys
-past_routes, preferred_airports, preferences, open_issues, plus anything else from the record the question
-needs (copy order ids and amounts verbatim). If the record does not contain the answer, say "not in record".
-Never infer habits beyond what the counts show."""
+past_routes, preferred_airports, preferences, facts, open_issues, plus anything else from the record the
+question needs (copy order ids and amounts verbatim). open_issues are unresolved problems named in facts or
+recent_session_summaries. Prices, order ids and routes come only from the bookings part of the record, never
+from memory text. If the record does not contain the answer, say "not in record".
+Never infer habits beyond what the counts and memory records state."""
 
 
 def run(question: str) -> str:

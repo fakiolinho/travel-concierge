@@ -3,7 +3,7 @@
 Usage: uv run python agents/travel_desk.py --actor cust_marios
 """
 
-import argparse, datetime as dt, json
+import argparse, datetime as dt, json, os, uuid
 
 from strands import Agent, tool
 
@@ -62,11 +62,24 @@ Rules:
 - Be short and plain, like a good phone agent."""
 
 
-def build(actor_id):
+def memory_session(actor_id):
+    """Persist this conversation to AgentCore Memory so the extractors can learn from it. Persistence only: no
+    retrieval_config, because every historical claim has to come through a traveler_profile tool call."""
+    if not common.MEMORY_ID:
+        return None
+    from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
+    from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
+
+    cfg = AgentCoreMemoryConfig(memory_id=common.MEMORY_ID, session_id=f"desk-{uuid.uuid4()}", actor_id=actor_id)
+    return AgentCoreMemorySessionManager(cfg, region_name=os.environ.get("AWS_REGION", "us-east-1"))
+
+
+def build(actor_id, session_manager=None):
     common.start(actor_id)
     return Agent(
         model=common.model("desk"),
         tools=[traveler_profile, flight_ops, policy],
+        session_manager=session_manager,
         system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"), actor_id=actor_id),
     )
 
@@ -76,12 +89,20 @@ def main():
     ap = argparse.ArgumentParser()
     # ponytail: --actor stands in for caller verification. Upgrade: Runtime inbound auth / OTP verification (step 4).
     ap.add_argument("--actor", required=True, choices=actors or None)
-    desk = build(ap.parse_args().actor)
-    print(f"Travel Desk {common.MODELS}. Empty line to quit.")
-    while msg := input("\nyou> ").strip():
-        common.user_turn(msg)
-        desk(msg)  # default callback handler streams the reply to stdout
-        print()
+    actor = ap.parse_args().actor
+    sm = memory_session(actor)
+    desk = build(actor, sm)
+    print(f"Travel Desk {common.MODELS}, memory {common.MEMORY_ID or 'off'}. Empty line to quit.")
+    try:
+        while msg := input("\nyou> ").strip():
+            common.user_turn(msg)
+            desk(msg)  # default callback handler streams the reply to stdout
+            print()
+    except EOFError:
+        pass
+    finally:
+        if sm:
+            sm.close()  # flush buffered events before exit
 
 
 if __name__ == "__main__":

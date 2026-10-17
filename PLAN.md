@@ -7,7 +7,7 @@ Prove a production grade pattern for contact center agents: multi agent orchestr
 ## Architecture
 ```
 Caller ─► Travel Desk (orchestrator, AgentCore Runtime)
-            │ reads Memory first
+            │ writes the conversation to Memory; reads Memory only through Traveler Profile
             ├─► Flight Ops        Duffel: search_flights, get_order, list_orders, change_order*, cancel_order*, add_bag*, seat_map
             ├─► Traveler Profile  structured history (Duffel orders by actor) + AgentCore Memory (prefs, facts, summaries)
             └─► Policy            fare rules KB, refund/change rules, 24h rule, disruption compensation rules
@@ -28,7 +28,8 @@ Resource: `TravelConciergeMemory`
 - UserPreference  → `/users/{actorId}/preferences/`
 - Semantic        → `/users/{actorId}/facts/`
 - Summary         → `/summaries/{actorId}/{sessionId}/`
-Strands: `AgentCoreMemorySessionManager(AgentCoreMemoryConfig(memory_id, session_id, actor_id))`, flush on exit.
+Strands: `AgentCoreMemorySessionManager(AgentCoreMemoryConfig(memory_id, session_id, actor_id))` on the desk, flush on exit.
+Persistence only, no retrieval_config: every historical claim must trace to a traveler_profile tool result.
 Seed with 10 to 15 scripted past sessions per traveler so extractors have real material.
 Structured history (prices, routes, dates) comes from Duffel orders, never from LLM memory.
 

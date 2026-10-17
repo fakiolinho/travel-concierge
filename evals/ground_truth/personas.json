@@ -1,0 +1,39 @@
+{
+  "_doc": "Ground truth traveler memory. kind: preference | fact | open_issue. match: all groups must hit, any word within a group (case insensitive substring) counts. say: what the traveler says in seeded sessions. ack: what the desk answers.",
+  "cust_marios": [
+    {"id": "m_seat", "kind": "preference", "statement": "Prefers an aisle seat", "match": [["aisle"]],
+     "say": "Could you put me in an aisle seat? I always prefer the aisle.", "ack": "Noted, aisle seat it is."},
+    {"id": "m_meal", "kind": "preference", "statement": "Needs a gluten free meal", "match": [["gluten"]],
+     "say": "Please add a gluten free meal, I'm coeliac.", "ack": "I've requested a gluten free meal for you."},
+    {"id": "m_time", "kind": "preference", "statement": "Prefers early morning departures", "match": [["morning"]],
+     "say": "I prefer early morning departures so I can make afternoon meetings.", "ack": "Understood, I'll look at morning departures first."},
+    {"id": "m_work", "kind": "fact", "statement": "Flies to London for work with a client in Canary Wharf", "match": [["canary wharf"]],
+     "say": "These London trips are for work, my client is in Canary Wharf.", "ack": "Thanks, Heathrow has a good connection to Canary Wharf."},
+    {"id": "m_bag", "kind": "open_issue", "statement": "Lost bag claim from a New York trip is still open", "match": [["bag", "luggage", "suitcase"], ["new york", "jfk"]],
+     "say": "My bag went missing on the New York flight and the claim is still open.", "ack": "I've added a note to follow up on your lost bag claim from the New York trip."}
+  ],
+  "cust_eleni": [
+    {"id": "e_seat", "kind": "preference", "statement": "Prefers a window seat", "match": [["window"]],
+     "say": "A window seat please, I like to look outside.", "ack": "Window seat noted."},
+    {"id": "e_meal", "kind": "preference", "statement": "Eats vegetarian", "match": [["vegetarian"]],
+     "say": "I'm vegetarian, can you add a vegetarian meal?", "ack": "Vegetarian meal requested."},
+    {"id": "e_airport", "kind": "preference", "statement": "Prefers flying from Thessaloniki", "match": [["thessaloniki", "skg"]],
+     "say": "I'd rather fly out of Thessaloniki when possible, it's close to home.", "ack": "I'll check Thessaloniki departures first."},
+    {"id": "e_cello", "kind": "fact", "statement": "Travels with a cello and books it an extra seat", "match": [["cello"]],
+     "say": "I'm travelling with my cello, it needs its own seat next to me.", "ack": "I'll make sure the cello gets an extra seat beside you."},
+    {"id": "e_refund", "kind": "open_issue", "statement": "Refund for a cancelled Rome flight not received yet", "match": [["refund"], ["rome", "fco"]],
+     "say": "I still haven't received the refund for the cancelled Rome flight.", "ack": "I've logged a follow up on your Rome refund."}
+  ],
+  "cust_nikos": [
+    {"id": "n_cabin", "kind": "preference", "statement": "Flies business class on long haul", "match": [["business"], ["class", "long haul", "long-haul"]],
+     "say": "For long haul I always fly business class.", "ack": "Business class for long haul, noted."},
+    {"id": "n_legroom", "kind": "preference", "statement": "Wants an exit row for legroom", "match": [["exit row", "legroom"]],
+     "say": "On short flights get me an exit row, I need the legroom.", "ack": "Exit row requested for the extra legroom."},
+    {"id": "n_meal", "kind": "preference", "statement": "Needs a halal meal", "match": [["halal"]],
+     "say": "Please make sure I get a halal meal.", "ack": "Halal meal added."},
+    {"id": "n_wife", "kind": "fact", "statement": "Usually travels together with wife", "match": [["wife", "spouse"]],
+     "say": "My wife usually comes with me, we sit together.", "ack": "I'll keep you and your wife seated together."},
+    {"id": "n_seat", "kind": "open_issue", "statement": "Complaint about a broken seat on the Dubai flight is open", "match": [["broken"], ["dubai", "dxb"]],
+     "say": "I complained about a broken seat on my Dubai flight and nobody got back to me.", "ack": "I've escalated your broken seat complaint from the Dubai flight."}
+  ]
+}
