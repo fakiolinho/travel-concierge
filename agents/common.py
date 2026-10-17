@@ -1,7 +1,7 @@
 """Shared bits for the local run: agent factory, tracing setup, session state, fixture history, answer cache,
 write confirmation gate."""
 
-import datetime as dt, hashlib, json, os, re, sys, time
+import datetime as dt, hashlib, json, logging, os, re, sys, time
 from pathlib import Path
 
 from strands import Agent
@@ -217,6 +217,8 @@ def gateway(role):
         )
         client.start()
         atexit.register(client.stop, None, None, None)
+        # A Cedar denial is an expected outcome (returned to the agent as an error result), not a crash to log.
+        logging.getLogger("strands.tools.mcp.mcp_client").setLevel(logging.CRITICAL)
         _gateways[role] = client
     return _gateways[role]
 

@@ -22,8 +22,31 @@
             }
           }
         },
+        "policyEngines": {
+          "TravelDeskPolicies": {
+            "policyEngineId": "TravelConcierge_TravelDeskPolicies-i0o6fmoi7w",
+            "policyEngineArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:policy-engine/TravelConcierge_TravelDeskPolicies-i0o6fmoi7w"
+          }
+        },
+        "policies": {
+          "TravelDeskPolicies/reads": {
+            "policyId": "reads-vgj8l37f4t",
+            "policyArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:policy-engine/TravelConcierge_TravelDeskPolicies-i0o6fmoi7w/policy/reads-vgj8l37f4t",
+            "engineName": "TravelDeskPolicies"
+          },
+          "TravelDeskPolicies/writes": {
+            "policyId": "writes-41wxfqjq8y",
+            "policyArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:policy-engine/TravelConcierge_TravelDeskPolicies-i0o6fmoi7w/policy/writes-41wxfqjq8y",
+            "engineName": "TravelDeskPolicies"
+          },
+          "TravelDeskPolicies/forbid_desk_writes": {
+            "policyId": "forbid_desk_writes-92oq01zup3",
+            "policyArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:policy-engine/TravelConcierge_TravelDeskPolicies-i0o6fmoi7w/policy/forbid_desk_writes-92oq01zup3",
+            "engineName": "TravelDeskPolicies"
+          }
+        },
         "stackName": "AgentCore-TravelConcierge-default",
-        "deployHash": "d63e196c0d394a3b"
+        "deployHash": "4e64e8413f46fe90"
       }
     }
   }
