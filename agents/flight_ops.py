@@ -1,25 +1,31 @@
-"""Flight Ops: Duffel tools. The read tools are called by the desk directly (no agent hop). The write tools
-(change_order, cancel_order, add_bag) belong to the Flight Ops agent only, the principal Cedar will allow to write
-in step 4. Writes go through common.gated, so they need a later user turn with an explicit yes before they run."""
+"""Flight Ops: the model facing Duffel tools. Each one is a thin call to the AgentCore Gateway (Lambda target
+"Duffel"), signed as the agent that is calling it: the desk's tools run as the desk role (Cedar: reads only), the
+Flight Ops agent's as the Flight Ops role (Cedar: the only principal allowed to write).
+
+Writes go through common.gated, so they need a later user turn with an explicit yes before they run: Cedar decides
+who may write, the gate decides when (Cedar cannot see conversation turns)."""
 
 import datetime as dt
-from decimal import Decimal
 
-from strands import tool
+from strands import ToolContext, tool
 
 import common
-from tools import duffel
 
 
-@tool
+def _call(ctx, name, **args):
+    return common.call_tool(ctx.agent.name, name, **args)
+
+
+@tool(context=True)
 def search_flights(
     origin: str,
     destination: str,
     departure_date: str,
+    tool_context: ToolContext,
     return_date: str = "",
     adults: int = 1,
     cabin_class: str = "economy",
-) -> list:
+) -> list | dict:
     """Search flight offers. Returns the 3 cheapest offers.
 
     Args:
@@ -30,53 +36,51 @@ def search_flights(
         adults: number of adult passengers
         cabin_class: economy, premium_economy, business or first
     """
-    slices = [{"origin": origin, "destination": destination, "departure_date": departure_date}]
-    if return_date:
-        slices.append({"origin": destination, "destination": origin, "departure_date": return_date})
-    req = duffel.call(
-        "POST",
-        # supplier_timeout caps how long Duffel waits on airlines: test mode searches otherwise take up to 20s.
-        "/offer_requests?return_offers=true&supplier_timeout=2000",
-        {"slices": slices, "passengers": [{"type": "adult"}] * adults, "cabin_class": cabin_class},
+    out = _call(
+        tool_context,
+        "search_flights",
+        origin=origin,
+        destination=destination,
+        departure_date=departure_date,
+        return_date=return_date,
+        adults=adults,
+        cabin_class=cabin_class,
     )
-    # ponytail: Duffel Airways (ZZ) only so evals are reproducible. Upgrade: drop the filter outside test mode.
-    offers = sorted(
-        (o for o in req["offers"] if o["owner"]["iata_code"] == "ZZ"), key=lambda o: Decimal(o["total_amount"])
-    )
-    out = [duffel.norm_offer(o) for o in offers[:3]]
-    common.note_expiry(out)
+    if isinstance(out, list):
+        common.note_expiry(out)
     return out
 
 
-@tool
-def get_order(order_id: str) -> dict:
+@tool(context=True)
+def get_order(order_id: str, tool_context: ToolContext) -> dict:
     """Live status and details of one of the traveler's orders.
 
     Args:
         order_id: Duffel order id, e.g. ord_...
     """
-    common.owned(order_id)
-    return duffel.norm_order(duffel.call("GET", f"/orders/{order_id}"))
+    return _call(tool_context, "get_order", order_id=order_id)
 
 
-@tool
-def list_orders() -> list:
+@tool(context=True)
+def list_orders(tool_context: ToolContext) -> list | dict:
     """Live status of all of the verified traveler's orders."""
-    return [duffel.norm_order(duffel.call("GET", f"/orders/{o['order_id']}")) for o in common.history()]
+    return _call(tool_context, "list_orders")
 
 
-@tool
-def seat_map(offer_id: str) -> list:
+@tool(context=True)
+def seat_map(offer_id: str, tool_context: ToolContext) -> list | dict:
     """Available seats with prices for a flight offer, one entry per segment.
 
     Args:
         offer_id: offer id from search_flights
     """
-    return [duffel.norm_seat_map(m) for m in duffel.call("GET", f"/seat_maps?offer_id={offer_id}")]
+    return _call(tool_context, "seat_map", offer_id=offer_id)
 
 
-@tool
-def change_options(order_id: str, new_departure_date: str, slice_index: int = 0) -> list:
+@tool(context=True)
+def change_options(
+    order_id: str, new_departure_date: str, tool_context: ToolContext, slice_index: int = 0
+) -> list | dict:
     """Priced options to move one slice of an order to a new date. Read only, nothing is changed.
 
     Args:
@@ -84,47 +88,30 @@ def change_options(order_id: str, new_departure_date: str, slice_index: int = 0)
         new_departure_date: YYYY-MM-DD
         slice_index: which slice to move, 0 = outbound, 1 = return
     """
-    common.owned(order_id)
-    order = duffel.call("GET", f"/orders/{order_id}")
-    sl = order["slices"][slice_index]
-    req = duffel.call(
-        "POST",
-        "/order_change_requests",
-        {
-            "order_id": order_id,
-            "slices": {
-                "remove": [{"slice_id": sl["id"]}],
-                "add": [
-                    {
-                        "origin": sl["origin"]["iata_code"],
-                        "destination": sl["destination"]["iata_code"],
-                        "departure_date": new_departure_date,
-                        "cabin_class": order.get("cabin_class") or "economy",
-                    }
-                ],
-            },
-        },
+    out = _call(
+        tool_context,
+        "change_options",
+        order_id=order_id,
+        new_departure_date=new_departure_date,
+        slice_index=slice_index,
     )
-    offers = req.get("order_change_offers") or []
-    out = [duffel.norm_change_offer(c) for c in sorted(offers, key=lambda c: Decimal(c["change_total_amount"]))[:5]]
-    common.note_expiry(out)
+    if isinstance(out, list):
+        common.note_expiry(out)
     return out
 
 
-@tool
-def bag_options(order_id: str) -> list:
+@tool(context=True)
+def bag_options(order_id: str, tool_context: ToolContext) -> list | dict:
     """Extra baggage that can be added to an order, with prices. Read only.
 
     Args:
         order_id: Duffel order id
     """
-    common.owned(order_id)
-    svcs = duffel.call("GET", f"/orders/{order_id}/available_services")
-    return [duffel.norm_bag(s) for s in svcs if s["type"] == "baggage"]
+    return _call(tool_context, "bag_options", order_id=order_id)
 
 
-@tool
-def change_order(order_id: str, change_offer_id: str) -> dict:
+@tool(context=True)
+def change_order(order_id: str, change_offer_id: str, tool_context: ToolContext) -> dict:
     """WRITE. Move an order to a change offer from change_options. First call returns a quote that needs
     the traveler's explicit yes; only a call after that confirmation executes.
 
@@ -132,67 +119,33 @@ def change_order(order_id: str, change_offer_id: str) -> dict:
         order_id: Duffel order id
         change_offer_id: id from change_options
     """
-    common.owned(order_id)
-
-    def quote():
-        c = duffel.call("POST", "/order_changes", {"selected_order_change_offer": change_offer_id})
-        return {
-            "order_change_id": c["id"],
-            "change_total": c["change_total_amount"],
-            "currency": c["change_total_currency"],
-            "penalty": c.get("penalty_total_amount"),
-            "new_total": c.get("new_total_amount"),
-            "expires_at": c.get("expires_at"),
-        }
-
-    def execute(q):
-        body = {}
-        if Decimal(q["change_total"]) > 0:
-            body["payment"] = {"type": "balance", "amount": q["change_total"], "currency": q["currency"]}
-        duffel.call("POST", f"/order_changes/{q['order_change_id']}/actions/confirm", body)
-        return {
-            "charged": q["change_total"],
-            "currency": q["currency"],
-            "order": duffel.norm_order(duffel.call("GET", f"/orders/{order_id}")),
-        }
-
-    return common.gated("change_order", (order_id, change_offer_id), quote, execute)
+    args = dict(order_id=order_id, change_offer_id=change_offer_id)
+    return common.gated(
+        "change_order",
+        (order_id, change_offer_id),
+        lambda: _call(tool_context, "change_order", **args),
+        lambda q: _call(tool_context, "change_order", **args, quote_id=q["quote_id"]),
+    )
 
 
-@tool
-def cancel_order(order_id: str) -> dict:
+@tool(context=True)
+def cancel_order(order_id: str, tool_context: ToolContext) -> dict:
     """WRITE. Cancel an order. First call returns the refund quote that needs the traveler's explicit yes;
     only a call after that confirmation executes.
 
     Args:
         order_id: Duffel order id
     """
-    common.owned(order_id)
-
-    def quote():
-        c = duffel.call("POST", "/order_cancellations", {"order_id": order_id})
-        return {
-            "cancellation_id": c["id"],
-            "refund_amount": c["refund_amount"],
-            "currency": c["refund_currency"],
-            "refund_to": c.get("refund_to"),
-            "expires_at": c.get("expires_at"),
-        }
-
-    def execute(q):
-        c = duffel.call("POST", f"/order_cancellations/{q['cancellation_id']}/actions/confirm")
-        return {
-            "order_id": order_id,
-            "cancelled_at": c.get("confirmed_at"),
-            "refund_amount": c["refund_amount"],
-            "currency": c["refund_currency"],
-        }
-
-    return common.gated("cancel_order", order_id, quote, execute)
+    return common.gated(
+        "cancel_order",
+        order_id,
+        lambda: _call(tool_context, "cancel_order", order_id=order_id),
+        lambda q: _call(tool_context, "cancel_order", order_id=order_id, quote_id=q["quote_id"]),
+    )
 
 
-@tool
-def add_bag(order_id: str, service_id: str, quantity: int = 1) -> dict:
+@tool(context=True)
+def add_bag(order_id: str, service_id: str, tool_context: ToolContext, quantity: int = 1) -> dict:
     """WRITE. Add a bag service from bag_options to an order. First call returns a price quote that needs
     the traveler's explicit yes; only a call after that confirmation executes.
 
@@ -201,33 +154,13 @@ def add_bag(order_id: str, service_id: str, quantity: int = 1) -> dict:
         service_id: id from bag_options
         quantity: number of bags
     """
-    common.owned(order_id)
-
-    def quote():
-        svc = next(
-            (s for s in duffel.call("GET", f"/orders/{order_id}/available_services") if s["id"] == service_id), None
-        )
-        if not svc:
-            return {"error": f"service {service_id} not available on {order_id}"}
-        return {
-            "service_id": service_id,
-            "quantity": quantity,
-            "currency": svc["total_currency"],
-            "amount": str(Decimal(svc["total_amount"]) * quantity),
-        }
-
-    def execute(q):
-        o = duffel.call(
-            "POST",
-            f"/orders/{order_id}/services",
-            {
-                "add_services": [{"id": q["service_id"], "quantity": q["quantity"]}],
-                "payment": {"type": "balance", "amount": q["amount"], "currency": q["currency"]},
-            },
-        )
-        return {"charged": q["amount"], "currency": q["currency"], "order": duffel.norm_order(o)}
-
-    return common.gated("add_bag", (order_id, service_id, quantity), quote, execute)
+    args = dict(order_id=order_id, service_id=service_id, quantity=quantity)
+    return common.gated(
+        "add_bag",
+        (order_id, service_id, quantity),
+        lambda: _call(tool_context, "add_bag", **args, confirm=False),
+        lambda q: _call(tool_context, "add_bag", **args, confirm=True),
+    )
 
 
 READ_TOOLS = [search_flights, get_order, list_orders, seat_map, change_options, bag_options]
@@ -236,7 +169,8 @@ PROMPT = """You are Flight Ops at an airline service desk. Now is {now} UTC. You
 traveler's bookings: change_order, cancel_order, add_bag. Call exactly the write the request names, with its ids.
 The first call returns status needs_confirmation with a quote: report the exact quote and stop. Call again only
 when the request says the traveler explicitly confirmed that exact action. Report amounts and ids verbatim from the
-tool result in one or two lines. Never estimate."""
+tool result in one or two lines. Never estimate. If a tool returns an error (for example a departure under 24 hours
+or a policy denial), report it plainly and stop."""
 
 
 def run(request: str) -> str:

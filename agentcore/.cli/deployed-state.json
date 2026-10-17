@@ -8,7 +8,22 @@
             "memoryArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:memory/TravelConciergeMemory-662wvfDcqN"
           }
         },
-        "stackName": "AgentCore-TravelConcierge-default"
+        "mcp": {
+          "gateways": {
+            "TravelDeskGateway": {
+              "gatewayId": "travelconcierge-traveldeskgateway-a4bksxcakf",
+              "gatewayArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf",
+              "gatewayUrl": "https://travelconcierge-traveldeskgateway-a4bksxcakf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+              "targets": {
+                "Duffel": {
+                  "targetId": "J58XEWM5RY"
+                }
+              }
+            }
+          }
+        },
+        "stackName": "AgentCore-TravelConcierge-default",
+        "deployHash": "d63e196c0d394a3b"
       }
     }
   }

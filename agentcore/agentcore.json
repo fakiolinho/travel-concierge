@@ -35,7 +35,258 @@
   "credentials": [],
   "evaluators": [],
   "onlineEvalConfigs": [],
-  "agentCoreGateways": [],
+  "agentCoreGateways": [
+    {
+      "name": "TravelDeskGateway",
+      "description": "Duffel flight tools for the Travel Desk (reads) and Flight Ops (writes), Cedar enforced",
+      "authorizerType": "AWS_IAM",
+      "enableSemanticSearch": false,
+      "exceptionLevel": "DEBUG",
+      "targets": [
+        {
+          "name": "Duffel",
+          "targetType": "lambda",
+          "toolDefinitions": [
+            {
+              "name": "search_flights",
+              "description": "Search Duffel Airways offers; returns the 3 cheapest, normalized.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "origin": {
+                    "type": "string",
+                    "description": "IATA airport code"
+                  },
+                  "destination": {
+                    "type": "string",
+                    "description": "IATA airport code"
+                  },
+                  "departure_date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "return_date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD for a round trip, empty for one way"
+                  },
+                  "adults": {
+                    "type": "integer",
+                    "description": "adult passengers"
+                  },
+                  "cabin_class": {
+                    "type": "string",
+                    "description": "economy, premium_economy, business or first"
+                  }
+                },
+                "required": ["origin", "destination", "departure_date"]
+              }
+            },
+            {
+              "name": "get_order",
+              "description": "One order of the traveler, normalized.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "Duffel order id"
+                  },
+                  "actor_id": {
+                    "type": "string",
+                    "description": "Verified traveler id, set by the agent runtime from the session, never by the model"
+                  }
+                },
+                "required": ["order_id", "actor_id"]
+              }
+            },
+            {
+              "name": "list_orders",
+              "description": "All orders of the traveler, normalized.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "actor_id": {
+                    "type": "string",
+                    "description": "Verified traveler id, set by the agent runtime from the session, never by the model"
+                  }
+                },
+                "required": ["actor_id"]
+              }
+            },
+            {
+              "name": "seat_map",
+              "description": "Available seats with prices for an offer.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "offer_id": {
+                    "type": "string",
+                    "description": "offer id from search_flights"
+                  }
+                },
+                "required": ["offer_id"]
+              }
+            },
+            {
+              "name": "change_options",
+              "description": "Priced options to move one slice of an order to a new date. Read only.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "Duffel order id"
+                  },
+                  "new_departure_date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "slice_index": {
+                    "type": "integer",
+                    "description": "0 = outbound, 1 = return"
+                  },
+                  "actor_id": {
+                    "type": "string",
+                    "description": "Verified traveler id, set by the agent runtime from the session, never by the model"
+                  }
+                },
+                "required": ["order_id", "new_departure_date", "actor_id"]
+              }
+            },
+            {
+              "name": "bag_options",
+              "description": "Extra baggage that can be added to an order. Read only.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "Duffel order id"
+                  },
+                  "actor_id": {
+                    "type": "string",
+                    "description": "Verified traveler id, set by the agent runtime from the session, never by the model"
+                  }
+                },
+                "required": ["order_id", "actor_id"]
+              }
+            },
+            {
+              "name": "change_order",
+              "description": "WRITE. Without quote_id: quote moving the order to a change offer. With quote_id: confirm that quote.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "Duffel order id"
+                  },
+                  "change_offer_id": {
+                    "type": "string",
+                    "description": "id from change_options"
+                  },
+                  "quote_id": {
+                    "type": "string",
+                    "description": "order change id returned by the quote call; empty to quote"
+                  },
+                  "actor_id": {
+                    "type": "string",
+                    "description": "Verified traveler id, set by the agent runtime from the session, never by the model"
+                  },
+                  "guest_verified": {
+                    "type": "boolean",
+                    "description": "True when the caller passed identity verification this session (Cedar requires it for writes)"
+                  }
+                },
+                "required": ["order_id", "change_offer_id", "actor_id", "guest_verified"]
+              }
+            },
+            {
+              "name": "cancel_order",
+              "description": "WRITE. Without quote_id: refund quote. With quote_id: confirm that cancellation.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "Duffel order id"
+                  },
+                  "quote_id": {
+                    "type": "string",
+                    "description": "cancellation id returned by the quote call; empty to quote"
+                  },
+                  "actor_id": {
+                    "type": "string",
+                    "description": "Verified traveler id, set by the agent runtime from the session, never by the model"
+                  },
+                  "guest_verified": {
+                    "type": "boolean",
+                    "description": "True when the caller passed identity verification this session (Cedar requires it for writes)"
+                  }
+                },
+                "required": ["order_id", "actor_id", "guest_verified"]
+              }
+            },
+            {
+              "name": "add_bag",
+              "description": "WRITE. confirm=false: price quote for adding a bag service. confirm=true: add it and pay.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "Duffel order id"
+                  },
+                  "service_id": {
+                    "type": "string",
+                    "description": "id from bag_options"
+                  },
+                  "quantity": {
+                    "type": "integer",
+                    "description": "number of bags"
+                  },
+                  "confirm": {
+                    "type": "boolean",
+                    "description": "false to quote, true to execute"
+                  },
+                  "actor_id": {
+                    "type": "string",
+                    "description": "Verified traveler id, set by the agent runtime from the session, never by the model"
+                  },
+                  "guest_verified": {
+                    "type": "boolean",
+                    "description": "True when the caller passed identity verification this session (Cedar requires it for writes)"
+                  }
+                },
+                "required": ["order_id", "service_id", "actor_id", "guest_verified"]
+              }
+            }
+          ],
+          "compute": {
+            "host": "Lambda",
+            "implementation": {
+              "language": "Python",
+              "path": "tools",
+              "handler": "lambda_handler.handler"
+            },
+            "pythonVersion": "PYTHON_3_13",
+            "timeout": 30,
+            "memorySize": 512,
+            "iamPolicy": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "secretsmanager:GetSecretValue",
+                  "Resource": "arn:aws:secretsmanager:us-east-1:437987386879:secret:travel-concierge/duffel-test-token-*"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
   "policyEngines": [],
   "configBundles": [],
   "abTests": [],

@@ -53,7 +53,7 @@ def call(method, path, body=None):
         return json.load(r)["data"]
 
 
-def book(t, origin, dest, days_ahead):
+def book(actor, t, origin, dest, days_ahead):
     date = (dt.date.today() + dt.timedelta(days=days_ahead)).isoformat()
     req = call(
         "POST",
@@ -73,6 +73,7 @@ def book(t, origin, dest, days_ahead):
         "/orders",
         {
             "type": "instant",
+            "metadata": {"actor_id": actor},  # ownership check in the Gateway Lambda
             "selected_offers": [offer["id"]],
             "payments": [{"type": "balance", "amount": offer["total_amount"], "currency": offer["total_currency"]}],
             "passengers": [
@@ -112,7 +113,7 @@ def main():
         out[actor] = []
         for origin, dest, n in t["trips"]:
             for _ in range(n):
-                o = book(t, origin, dest, day)
+                o = book(actor, t, origin, dest, day)
                 day += 3
                 if o:
                     out[actor].append(o)

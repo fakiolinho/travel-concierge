@@ -185,10 +185,56 @@ def history(actor_id=None):
     return json.loads(HISTORY.read_text()).get(actor_id or S["actor_id"], [])
 
 
-def owned(order_id):
-    # ponytail: ownership = order id is in the actor's fixture. Upgrade: Duffel order metadata.actor_id + Cedar.
-    if order_id not in {o["order_id"] for o in history()}:
-        raise ValueError(f"order {order_id} not found for this traveler")
+# AgentCore Gateway: every Duffel tool is a Gateway call. Each agent signs with its own IAM role, so Cedar sees
+# who is calling (desk: reads only; Flight Ops: reads and writes). Order ownership is checked by the Lambda.
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "")
+GATEWAY_ROLES = {
+    "desk": os.environ.get("GATEWAY_ROLE_DESK", ""),
+    "flight_ops": os.environ.get("GATEWAY_ROLE_FLIGHT_OPS", ""),
+}
+GATEWAY_TARGET = "Duffel"
+ACTOR_TOOLS = {"get_order", "list_orders", "change_options", "bag_options", "change_order", "cancel_order", "add_bag"}
+_gateways = {}
+
+
+def gateway(role):
+    """One MCP session per agent role, signed with SigV4 as that role's assumed IAM identity."""
+    if role not in _gateways:
+        import atexit, boto3
+        from botocore.credentials import Credentials
+        from mcp_proxy_for_aws.client import aws_iam_streamablehttp_client
+        from strands.tools.mcp import MCPClient
+
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        assert GATEWAY_URL and GATEWAY_ROLES[role], "set GATEWAY_URL and GATEWAY_ROLE_* (see README, step 4)"
+        # ponytail: 1h STS credentials, not refreshed. Upgrade: botocore RefreshableCredentials for long sessions.
+        c = boto3.client("sts", region_name=region).assume_role(
+            RoleArn=GATEWAY_ROLES[role], RoleSessionName=f"{role}-{(S.get('session_id') or 'local')[-40:]}"
+        )["Credentials"]
+        creds = Credentials(c["AccessKeyId"], c["SecretAccessKey"], c["SessionToken"])
+        client = MCPClient(
+            lambda: aws_iam_streamablehttp_client(GATEWAY_URL, "bedrock-agentcore", region, credentials=creds)
+        )
+        client.start()
+        atexit.register(client.stop, None, None, None)
+        _gateways[role] = client
+    return _gateways[role]
+
+
+def call_tool(role, name, **args):
+    """Call one Gateway tool as `role`. actor_id and guest_verified come from the verified session, never from the
+    model: the model-facing tools don't even have those parameters. Returns the tool's JSON, or {"error": ...}."""
+    args = {k: v for k, v in args.items() if v is not None and v != ""}
+    if name in ACTOR_TOOLS:
+        args.update(actor_id=S["actor_id"], guest_verified=bool(S.get("guest_verified")))
+    r = gateway(role).call_tool_sync(f"{name}-{time.time_ns()}", f"{GATEWAY_TARGET}___{name}", args)
+    text = "".join(c.get("text", "") for c in r["content"])
+    if r["status"] == "error":
+        return {"error": text or "gateway call failed"}
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {"error": f"unexpected gateway response: {text[:200]}"}
 
 
 # ponytail: regex "yes" detector. Upgrade: Strands Decider pre send gate + Cedar context.guest_verified (step 4).

@@ -8,7 +8,7 @@ import {
   type CustomJWTAuthorizerConfig,
   type HarnessDeploymentConfig,
 } from '@aws/agentcore-cdk';
-import { CfnOutput, Stack, type StackProps } from 'aws-cdk-lib';
+import { CfnOutput, Duration, Stack, type StackProps } from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
@@ -134,6 +134,35 @@ export class AgentCoreStack extends Stack {
         credentials,
         projectTags: spec.tags,
       });
+    }
+
+    // Travel Concierge: one Gateway identity per agent, so Cedar can tell the desk (reads) from Flight Ops
+    // (the only principal allowed to write). Fixed role names: policies/*.cedar match the assumed-role ARNs.
+    // Trust is the account; who may assume them is decided by the caller's own sts:AssumeRole permission
+    // (the deployed desk runtime role below, and admins running the local REPL).
+    const gatewayArns = `arn:aws:bedrock-agentcore:${this.region}:${this.account}:gateway/*`;
+    const gatewayRoles: Record<string, iam.Role> = {};
+    for (const [id, roleName] of [
+      ['DeskGatewayRole', 'TravelConcierge-DeskGateway'],
+      ['FlightOpsGatewayRole', 'TravelConcierge-FlightOpsGateway'],
+    ] as const) {
+      const role = new iam.Role(this, id, {
+        roleName,
+        assumedBy: new iam.AccountRootPrincipal(),
+        maxSessionDuration: Duration.hours(1),
+        description: 'AgentCore Gateway caller identity for the Travel Concierge',
+      });
+      role.addToPolicy(new iam.PolicyStatement({ actions: ['bedrock-agentcore:InvokeGateway'], resources: [gatewayArns] }));
+      gatewayRoles[id] = role;
+      new CfnOutput(this, `${id}Arn`, { value: role.roleArn });
+    }
+    for (const env of this.application.environments.values()) {
+      env.runtime.role.addToPrincipalPolicy(
+        new iam.PolicyStatement({
+          actions: ['sts:AssumeRole'],
+          resources: Object.values(gatewayRoles).map(r => r.roleArn),
+        })
+      );
     }
 
     // Create payment infrastructure via CFN constructs
