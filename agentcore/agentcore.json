@@ -169,6 +169,32 @@
               }
             },
             {
+              "name": "book_offer",
+              "description": "WRITE. confirm=false: live price quote for booking an offer for the traveler (one passenger). confirm=true: book it. Passenger details come from the traveler's own past booking.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "offer_id": {
+                    "type": "string",
+                    "description": "offer id from search_flights"
+                  },
+                  "confirm": {
+                    "type": "boolean",
+                    "description": "false to quote, true to book"
+                  },
+                  "actor_id": {
+                    "type": "string",
+                    "description": "Verified traveler id, set by the agent runtime from the session, never by the model"
+                  },
+                  "guest_verified": {
+                    "type": "boolean",
+                    "description": "True when the caller passed identity verification this session (Cedar requires it for writes)"
+                  }
+                },
+                "required": ["offer_id", "actor_id", "guest_verified"]
+              }
+            },
+            {
               "name": "change_order",
               "description": "WRITE. Without quote_id: quote moving the order to a change offer. With quote_id: confirm that quote.",
               "inputSchema": {
@@ -298,7 +324,7 @@
       "policies": [
         {
           "name": "reads",
-          "statement": "// Reads: both agent identities may call the read tools. Order ownership is checked by the Lambda (Cedar cannot\n// see Duffel data). Anything no policy permits is denied (AgentCore Policy is default deny).\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___search_flights\",\n    AgentCore::Action::\"Duffel___get_order\",\n    AgentCore::Action::\"Duffel___list_orders\",\n    AgentCore::Action::\"Duffel___seat_map\",\n    AgentCore::Action::\"Duffel___change_options\",\n    AgentCore::Action::\"Duffel___bag_options\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DeskGateway\" ||\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\"\n};",
+          "statement": "// Reads: both agent identities may call the read tools. Order ownership is checked by the Lambda (Cedar cannot\n// see Duffel data). Anything no policy permits is denied (AgentCore Policy is default deny).\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___search_flights\",\n    AgentCore::Action::\"Duffel___get_order\",\n    AgentCore::Action::\"Duffel___list_orders\",\n    AgentCore::Action::\"Duffel___seat_map\",\n    AgentCore::Action::\"Duffel___change_options\",\n    AgentCore::Action::\"Duffel___bag_options\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DeskGateway\" ||\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\"\n};\n",
           "sourceFile": "policies/reads.cedar",
           "validationMode": "FAIL_ON_ANY_FINDINGS",
           "enforcementMode": "ACTIVE",
@@ -306,7 +332,7 @@
         },
         {
           "name": "writes",
-          "statement": "// Writes: only the Flight Ops identity, and only for a caller who passed identity verification this session.\n// The confirmation turn (\"yes\" in a later message) is enforced in agent code (common.gated): Cedar cannot see turns.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\" &&\n  context.input.guest_verified == true\n};",
+          "statement": "// Writes: only the Flight Ops identity, and only for a caller who passed identity verification this session.\n// The confirmation turn (\"yes\" in a later message) is enforced in agent code (common.gated): Cedar cannot see turns.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___book_offer\",\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\" &&\n  context.input.guest_verified == true\n};\n",
           "sourceFile": "policies/writes.cedar",
           "validationMode": "FAIL_ON_ANY_FINDINGS",
           "enforcementMode": "ACTIVE",
@@ -314,7 +340,7 @@
         },
         {
           "name": "forbid_desk_writes",
-          "statement": "// Belt and braces: even if a broader permit is added later, the desk identity can never write.\nforbid (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DeskGateway\"\n};",
+          "statement": "// Belt and braces: even if a broader permit is added later, the desk identity can never write.\nforbid (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___book_offer\",\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DeskGateway\"\n};\n",
           "sourceFile": "policies/forbid_desk_writes.cedar",
           "validationMode": "FAIL_ON_ANY_FINDINGS",
           "enforcementMode": "ACTIVE",

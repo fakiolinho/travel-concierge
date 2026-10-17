@@ -64,11 +64,17 @@ def get_order(order_id, actor_id="", **_):
     return duffel.norm_order(_owned(order_id, actor_id))
 
 
-def list_orders(actor_id="", **_):
+def _actor_orders(actor_id):
+    """Raw Duffel orders tagged with this actor, newest first. Covers seeded history and desk bookings alike."""
     # ponytail: lists the whole (test) account and filters by metadata. Upgrade: a per actor index (DynamoDB) or
     # Duffel's own customer/user objects once orders are created with them.
     orders = duffel.call("GET", "/orders?limit=200")
-    return [duffel.norm_order(o) for o in orders if actor_id and (o.get("metadata") or {}).get("actor_id") == actor_id]
+    mine = [o for o in orders if actor_id and (o.get("metadata") or {}).get("actor_id") == actor_id]
+    return sorted(mine, key=lambda o: o.get("created_at") or "", reverse=True)
+
+
+def list_orders(actor_id="", **_):
+    return [duffel.norm_order(o) for o in _actor_orders(actor_id)]
 
 
 def seat_map(offer_id, **_):
@@ -159,6 +165,38 @@ def cancel_order(order_id, actor_id="", quote_id="", now=None, **_):
     }
 
 
+PAX_FIELDS = ("title", "gender", "given_name", "family_name", "born_on", "email", "phone_number")
+
+
+def book_offer(offer_id, actor_id="", confirm=False, **_):
+    """confirm=false: live price quote for one passenger. confirm=true: book it for the traveler. Price comes from
+    Duffel's offer at confirm time, passenger details from the traveler's own newest order: never from the caller."""
+    o = duffel.call("GET", f"/offers/{offer_id}")
+    if len(o["passengers"]) != 1:
+        raise ValueError("the desk can only book offers for a single passenger")
+    n = duffel.norm_offer(o)
+    q = {"offer_id": offer_id, "total": n["total"], "currency": n["currency"], "expires_at": n["expires_at"],
+         "slices": n["slices"], "conditions": n["conditions"]}  # fmt: skip
+    if not confirm:
+        return q
+    past = _actor_orders(actor_id)
+    if not past:
+        raise PermissionError("no past booking to copy passenger details from; hand over to a human")
+    pax = {k: past[0]["passengers"][0][k] for k in PAX_FIELDS}
+    order = duffel.call(
+        "POST",
+        "/orders",
+        {
+            "type": "instant",
+            "selected_offers": [offer_id],
+            "payments": [{"type": "balance", "amount": o["total_amount"], "currency": o["total_currency"]}],
+            "passengers": [{"id": o["passengers"][0]["id"], **pax}],
+            "metadata": {"actor_id": actor_id},  # ownership for every later call
+        },
+    )
+    return {"booked": True, "order": duffel.norm_order(order)}
+
+
 def add_bag(order_id, service_id, quantity=1, actor_id="", confirm=False, **_):
     _owned(order_id, actor_id)
     svc = next((s for s in duffel.call("GET", f"/orders/{order_id}/available_services") if s["id"] == service_id), None)
@@ -194,6 +232,7 @@ TOOLS = {
         bag_options,
         change_order,
         cancel_order,
+        book_offer,
         add_bag,
     )
 }

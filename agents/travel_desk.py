@@ -14,8 +14,9 @@ import common, flight_ops as fo, policy as pol, traveler_profile as tp
 
 @tool
 def flight_ops(request: str) -> str:
-    """Hand a write to Flight Ops: change_order (with change_offer_id from change_options), cancel_order, or
-    add_bag (with service_id from bag_options). Say whether the traveler has explicitly confirmed the quoted action.
+    """Hand a write to Flight Ops: book_offer (with offer_id from search_flights), change_order (with
+    change_offer_id from change_options), cancel_order, or add_bag (with service_id from bag_options). Say whether
+    the traveler has explicitly confirmed the quoted action.
 
     Args:
         request: the write, with order id and the offer or service id it needs, and the confirmation status
@@ -32,7 +33,7 @@ How to work:
   airport. Search other airports only if asked. One search per question unless the traveler asks for more.
 - Bookings: get_order or list_orders. Date changes: change_options. Bags: bag_options. Seats: seat_map.
 - Anything touching money, a refund, a change or compensation: apply the policy rules below.
-- Writes (change, cancel, add bag): call flight_ops; it returns a quote. Read it back exactly and ask for an
+- Writes (book a searched flight, change, cancel, add bag): call flight_ops; it returns a quote. Read it back exactly and ask for an
   explicit yes. Only after the traveler says yes in a later message, call flight_ops again stating they confirmed.
 
 Rules:

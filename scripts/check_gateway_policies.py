@@ -2,13 +2,14 @@
 cancelled. Run after `agentcore deploy`:  uv run python scripts/check_gateway_policies.py
 """
 
-import json, sys
+import datetime as dt, json, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agents"))
 import common  # noqa: E402
 
 marios_order = common.history("cust_marios")[0]["order_id"]
+SEARCH_DATE = (dt.date.today() + dt.timedelta(days=30)).isoformat()
 
 
 def call(role, actor, name, verified=True, **args):
@@ -21,7 +22,19 @@ def denied(r):
     return isinstance(r, dict) and "error" in r
 
 
+common.start("cust_marios", "policy-check")
+offer = common.call_tool("desk", "search_flights", origin="ATH", destination="LHR", departure_date=SEARCH_DATE)[0]
+
 results = [
+    (
+        "desk book_offer is denied by Cedar",
+        denied(call("desk", "cust_marios", "book_offer", offer_id=offer["offer_id"])),
+    ),
+    (
+        "flight_ops gets a booking quote (nothing booked)",
+        call("flight_ops", "cust_marios", "book_offer", offer_id=offer["offer_id"]).get("offer_id")
+        == offer["offer_id"],
+    ),
     ("desk reads its traveler's order", not denied(call("desk", "cust_marios", "get_order", order_id=marios_order))),
     (
         "desk cancel_order is denied by Cedar",

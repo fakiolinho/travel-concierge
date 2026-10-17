@@ -145,6 +145,24 @@ def cancel_order(order_id: str, tool_context: ToolContext) -> dict:
 
 
 @tool(context=True)
+def book_offer(offer_id: str, tool_context: ToolContext) -> dict:
+    """WRITE. Book a flight offer from search_flights for the verified traveler (one passenger). First call
+    returns the live price quote that needs the traveler's explicit yes; only a call after that confirmation books.
+
+    Args:
+        offer_id: offer id from search_flights
+    """
+    # Passenger details are filled by the Lambda from the traveler's own past booking: the model never sees or
+    # supplies personal data, and the new order is tagged with the traveler's actor_id there.
+    return common.gated(
+        "book_offer",
+        offer_id,
+        lambda: _call(tool_context, "book_offer", offer_id=offer_id, confirm=False),
+        lambda q: _call(tool_context, "book_offer", offer_id=offer_id, confirm=True),
+    )
+
+
+@tool(context=True)
 def add_bag(order_id: str, service_id: str, tool_context: ToolContext, quantity: int = 1) -> dict:
     """WRITE. Add a bag service from bag_options to an order. First call returns a price quote that needs
     the traveler's explicit yes; only a call after that confirmation executes.
@@ -166,7 +184,8 @@ def add_bag(order_id: str, service_id: str, tool_context: ToolContext, quantity:
 READ_TOOLS = [search_flights, get_order, list_orders, seat_map, change_options, bag_options]
 
 PROMPT = """You are Flight Ops at an airline service desk. Now is {now} UTC. You make changes to one verified
-traveler's bookings: change_order, cancel_order, add_bag. Call exactly the write the request names, with its ids.
+traveler's bookings: book_offer, change_order, cancel_order, add_bag. Call exactly the write the request names,
+with its ids.
 The first call returns status needs_confirmation with a quote: report the exact quote and stop. Call again only
 when the request says the traveler explicitly confirmed that exact action. Report amounts and ids verbatim from the
 tool result in one or two lines. Never estimate. If a tool returns an error (for example a departure under 24 hours
@@ -177,6 +196,6 @@ def run(request: str) -> str:
     agent = common.agent(
         "flight_ops",
         system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")),
-        tools=[get_order, change_order, cancel_order, add_bag],
+        tools=[get_order, book_offer, change_order, cancel_order, add_bag],
     )
     return str(agent(request))

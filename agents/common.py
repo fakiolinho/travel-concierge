@@ -193,7 +193,16 @@ GATEWAY_ROLES = {
     "flight_ops": os.environ.get("GATEWAY_ROLE_FLIGHT_OPS", ""),
 }
 GATEWAY_TARGET = "Duffel"
-ACTOR_TOOLS = {"get_order", "list_orders", "change_options", "bag_options", "change_order", "cancel_order", "add_bag"}
+ACTOR_TOOLS = {
+    "get_order",
+    "list_orders",
+    "change_options",
+    "bag_options",
+    "book_offer",
+    "change_order",
+    "cancel_order",
+    "add_bag",
+}
 _gateways = {}
 
 

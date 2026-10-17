@@ -2,6 +2,7 @@
 forbid (
   principal is AgentCore::IamEntity,
   action in [
+    AgentCore::Action::"Duffel___book_offer",
     AgentCore::Action::"Duffel___change_order",
     AgentCore::Action::"Duffel___cancel_order",
     AgentCore::Action::"Duffel___add_bag"
