@@ -9,6 +9,7 @@ import {
   type HarnessDeploymentConfig,
 } from '@aws/agentcore-cdk';
 import { CfnOutput, Duration, Stack, type StackProps } from 'aws-cdk-lib';
+import * as bedrock from 'aws-cdk-lib/aws-bedrock';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
@@ -164,6 +165,62 @@ export class AgentCoreStack extends Stack {
         })
       );
     }
+
+    // Travel Concierge: Bedrock Guardrail on both agents' models (Layer A in PLAN.md). Card and passport numbers are
+    // blocked on input (the desk never needs them) and masked on output; visa and medical advice are denied topics.
+    // ponytail: no contextual grounding check yet. Upgrade: grounding on the policy rules once they live in a KB.
+    const blocked =
+      "I can't take card or passport numbers, or advise on visas or medical questions, on this line. " +
+      'Please leave those out and I will help with your booking.';
+    const guardrail = new bedrock.CfnGuardrail(this, 'TravelDeskGuardrail', {
+      name: 'TravelConcierge-TravelDesk',
+      description: 'PII (card, passport) and denied topics (visa, medical) for the Travel Desk agents',
+      blockedInputMessaging: blocked,
+      blockedOutputsMessaging: blocked,
+      sensitiveInformationPolicyConfig: {
+        piiEntitiesConfig: [
+          'CREDIT_DEBIT_CARD_NUMBER',
+          'CREDIT_DEBIT_CARD_CVV',
+          'CREDIT_DEBIT_CARD_EXPIRY',
+          'US_PASSPORT_NUMBER',
+        ].map(type => ({ type, action: 'BLOCK', inputAction: 'BLOCK', outputAction: 'ANONYMIZE' })),
+        regexesConfig: [
+          {
+            // Non US passports: "passport" followed by a 6 to 9 character document number.
+            name: 'passport_number',
+            description: 'Passport number mentioned with the word passport',
+            pattern: '(?i)passport\\D{0,20}[A-Z0-9]{6,9}',
+            action: 'BLOCK',
+            inputAction: 'BLOCK',
+            outputAction: 'ANONYMIZE',
+          },
+        ],
+      },
+      topicPolicyConfig: {
+        topicsConfig: [
+          {
+            name: 'Visa_and_immigration',
+            type: 'DENY',
+            definition:
+              'Advice on visas, entry requirements, immigration status, residence permits or whether a traveler may enter a country.',
+            examples: ['Do I need a visa for the UK?', 'Can I enter the US with an expired ESTA?'],
+          },
+          {
+            name: 'Medical_advice',
+            type: 'DENY',
+            definition:
+              'Medical or health advice, including whether a traveler is fit to fly, medication, vaccinations or symptoms.',
+            examples: ['Is it safe to fly with a chest infection?', 'Which vaccines do I need for Thailand?'],
+          },
+        ],
+      },
+    });
+    const guardrailVersion = new bedrock.CfnGuardrailVersion(this, 'TravelDeskGuardrailVersion', {
+      guardrailIdentifier: guardrail.attrGuardrailId,
+      description: 'Pinned for the agents; bump by changing the guardrail and redeploying',
+    });
+    new CfnOutput(this, 'GuardrailIdOutput', { value: guardrail.attrGuardrailId });
+    new CfnOutput(this, 'GuardrailVersionOutput', { value: guardrailVersion.attrVersion });
 
     // Create payment infrastructure via CFN constructs
     if (paymentSpec && paymentSpec.length > 0) {
