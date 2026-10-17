@@ -96,7 +96,7 @@ if __name__ == "__main__":
     assert matches("Prefers an AISLE seat", [["aisle"]]) and not matches("window seat", [["aisle"]])
     assert matches("bag lost on the JFK flight", [["bag", "luggage"], ["new york", "jfk"]])
     assert not matches("bag lost in Paris", [["bag", "luggage"], ["new york", "jfk"]])
-    assert common.MEMORY_ID, "set MEMORY_ID in .env (scripts/create_memory.py prints it)"
+    assert common.MEMORY_ID, "set MEMORY_ID in .env (agentcore status --type memory shows it)"
     client = MemoryClient(region_name="us-east-1")
     if "--measure-only" not in sys.argv:
         seed(client)

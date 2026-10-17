@@ -66,7 +66,7 @@ def agent(role, **kw):
 
 
 def namespaces(actor_id):
-    """Memory namespaces of one actor, matching agentcore.json. The trailing slash keeps cust_a from matching cust_ab."""
+    """Memory namespaces of one actor, matching agentcore/agentcore.json. The trailing slash keeps cust_a from matching cust_ab."""
     return {
         "preferences": f"/users/{actor_id}/preferences/",
         "facts": f"/users/{actor_id}/facts/",

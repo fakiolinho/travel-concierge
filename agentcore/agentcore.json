@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "TravelConcierge",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "TravelConcierge"
+  },
+  "runtimes": [],
+  "memories": [
+    {
+      "name": "TravelConciergeMemory",
+      "eventExpiryDuration": 90,
+      "strategies": [
+        {
+          "type": "SEMANTIC",
+          "name": "facts",
+          "namespaceTemplates": ["/users/{actorId}/facts/"]
+        },
+        {
+          "type": "USER_PREFERENCE",
+          "name": "preferences",
+          "namespaceTemplates": ["/users/{actorId}/preferences/"]
+        },
+        {
+          "type": "SUMMARIZATION",
+          "name": "summaries",
+          "namespaceTemplates": ["/summaries/{actorId}/{sessionId}/"]
+        }
+      ]
+    }
+  ],
+  "knowledgeBases": [],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [],
+  "policyEngines": [],
+  "configBundles": [],
+  "abTests": [],
+  "harnesses": [],
+  "datasets": [],
+  "capacityProviders": [],
+  "payments": []
+}

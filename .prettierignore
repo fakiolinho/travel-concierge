@@ -6,3 +6,5 @@ logs/
 node_modules/
 cdk.out/
 .cli/
+agentcore/cdk/package-lock.json
+agentcore/.llm-context/

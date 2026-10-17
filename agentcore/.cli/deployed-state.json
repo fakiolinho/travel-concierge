@@ -1,0 +1,15 @@
+{
+  "targets": {
+    "default": {
+      "resources": {
+        "memories": {
+          "TravelConciergeMemory": {
+            "memoryId": "TravelConciergeMemory-662wvfDcqN",
+            "memoryArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:memory/TravelConciergeMemory-662wvfDcqN"
+          }
+        },
+        "stackName": "AgentCore-TravelConcierge-default"
+      }
+    }
+  }
+}

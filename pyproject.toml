@@ -5,7 +5,6 @@ requires-python = ">=3.11"
 dependencies = [
   "strands-agents",
   "bedrock-agentcore",
-  "bedrock-agentcore-starter-toolkit",
   "boto3",
 ]
 
