@@ -11,3 +11,8 @@ dependencies = [
 
 [dependency-groups]
 evals = ["strands-decider==0.1.0"]
+dev = ["ruff"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
