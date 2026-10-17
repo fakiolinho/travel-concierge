@@ -1,6 +1,6 @@
 """Policy specialist: desk rules + the fare conditions Duffel attaches to an order."""
 
-from strands import Agent, tool
+from strands import tool
 
 import common
 from tools import duffel
@@ -51,7 +51,5 @@ Never invent amounts, compensation or exceptions. If no rule covers the question
 
 
 def run(question: str) -> str:
-    agent = Agent(
-        model=common.model("policy"), system_prompt=PROMPT, tools=[get_rule, fare_conditions], callback_handler=None
-    )
+    agent = common.agent("policy", system_prompt=PROMPT, tools=[get_rule, fare_conditions])
     return str(agent(question))

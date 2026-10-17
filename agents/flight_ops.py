@@ -4,7 +4,7 @@ Write tools go through common.gated, so they need a later user turn with an expl
 import datetime as dt
 from decimal import Decimal
 
-from strands import Agent, tool
+from strands import tool
 
 import common
 from tools import duffel
@@ -41,7 +41,9 @@ def search_flights(
     offers = sorted(
         (o for o in req["offers"] if o["owner"]["iata_code"] == "ZZ"), key=lambda o: Decimal(o["total_amount"])
     )
-    return [duffel.norm_offer(o) for o in offers[:5]]
+    out = [duffel.norm_offer(o) for o in offers[:5]]
+    common.note_expiry(out)
+    return out
 
 
 @tool
@@ -102,7 +104,9 @@ def change_options(order_id: str, new_departure_date: str, slice_index: int = 0)
         },
     )
     offers = req.get("order_change_offers") or []
-    return [duffel.norm_change_offer(c) for c in sorted(offers, key=lambda c: Decimal(c["change_total_amount"]))[:5]]
+    out = [duffel.norm_change_offer(c) for c in sorted(offers, key=lambda c: Decimal(c["change_total_amount"]))[:5]]
+    common.note_expiry(out)
+    return out
 
 
 @tool
@@ -233,10 +237,9 @@ You act on behalf of one verified traveler; their orders are the only ones you c
 
 
 def run(request: str) -> str:
-    agent = Agent(
-        model=common.model("flight_ops"),
+    agent = common.agent(
+        "flight_ops",
         system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")),
-        callback_handler=None,
         tools=[
             search_flights,
             get_order,

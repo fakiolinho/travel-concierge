@@ -1,9 +1,12 @@
-"""Shared bits for the local run: model factory, session state, fixture history, write confirmation gate."""
+"""Shared bits for the local run: agent factory, tracing setup, session state, fixture history, answer cache,
+write confirmation gate."""
 
-import json, os, re, sys
+import datetime as dt, hashlib, json, os, re, sys, time
 from pathlib import Path
 
+from strands import Agent
 from strands.models import BedrockModel
+from strands.models.model import CacheConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # agents run as scripts; this lets them `from tools import duffel`
@@ -29,7 +32,39 @@ MEMORY_ID = os.environ.get("MEMORY_ID", "")  # empty = run without AgentCore Mem
 
 
 def model(role):
-    return BedrockModel(model_id=MODELS[role], region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    # Bedrock prompt caching: reuses the system prompt, tool specs and earlier turns between calls. Faster first
+    # token and cheaper input on long conversations; prefixes under the model's minimum size are silently not cached.
+    return BedrockModel(
+        model_id=MODELS[role],
+        region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        cache_config=CacheConfig(strategy="auto"),
+    )
+
+
+LOG_DIR = ROOT / "logs"
+
+
+def setup_tracing():
+    """Strands' built in OpenTelemetry tracing, exported as one JSON span per line to logs/traces-YYYY-MM-DD.jsonl.
+    Spans cover every agent run, event loop cycle, model call and tool call, with start/end timestamps, parent ids
+    (specialist spans nest under the desk tool span that called them), token usage, and inputs/outputs."""
+    from strands.telemetry import StrandsTelemetry
+
+    # ponytail: local file with unredacted conversation text. Upgrade: AgentCore Observability (CloudWatch) in
+    # Runtime via an OTLP exporter, PII redaction via Guardrails (step 4).
+    LOG_DIR.mkdir(exist_ok=True)
+    path = LOG_DIR / f"traces-{dt.date.today()}.jsonl"
+    StrandsTelemetry().setup_console_exporter(out=path.open("a"), formatter=lambda s: s.to_json(indent=None) + "\n")
+    return path
+
+
+def agent(role, **kw):
+    """Every agent is built here: named (span names), tagged with session and actor (span attributes), and only
+    the desk streams to stdout."""
+    if role != "desk":
+        kw.setdefault("callback_handler", None)
+    attrs = {"session.id": S.get("session_id") or "", "actor.id": S.get("actor_id") or "", "agent.role": role}
+    return Agent(name=role, model=model(role), trace_attributes=attrs, **kw)
 
 
 def namespaces(actor_id):
@@ -74,14 +109,69 @@ def memory_records(actor_id, limit=50):
 S = {}
 
 
-def start(actor_id):
+def start(actor_id, session_id=None):
     S.clear()
-    S.update(actor_id=actor_id, guest_verified=True, turn=0, last_user="", pending={}, profile_turn=None)
+    S.update(
+        actor_id=actor_id,
+        session_id=session_id,
+        guest_verified=True,
+        turn=0,
+        last_user="",
+        pending={},
+        profile_turn=None,
+    )
 
 
 def user_turn(text):
     S["turn"] += 1
     S["last_user"] = text
+    # per turn: write tools touched / executed, earliest offer expiry seen
+    S.update(touched_write=False, wrote=False, expires=None)
+
+
+def note_expiry(offers):
+    for o in offers:
+        if o.get("expires_at"):
+            t = dt.datetime.fromisoformat(o["expires_at"]).timestamp()
+            S["expires"] = min(S["expires"] or t, t)
+
+
+# ponytail: answer cache in a local JSON file, one process. Upgrade: DynamoDB/ElastiCache with TTL in Runtime (step 4).
+# Only read only turns are cached, until the earliest offer expiry they showed (max 10 min); any executed write
+# drops that traveler's entries. A hit replays the answer, so its prices are still from unexpired tool results.
+CACHE = ROOT / ".cache/answers.json"
+CACHE_TTL = 600
+
+
+def _cache(drop_actor=None):
+    try:
+        c = json.loads(CACHE.read_text())
+    except (FileNotFoundError, ValueError):
+        c = {}
+    now = time.time()
+    return {k: v for k, v in c.items() if v["expires"] > now and not k.startswith(f"{drop_actor}:")}
+
+
+def cache_key(actor_id, user_msgs):
+    """Same traveler + same questions so far in the session (case and whitespace insensitive)."""
+    norm = [" ".join(m.lower().split()) for m in user_msgs]
+    return f"{actor_id}:{hashlib.sha256(json.dumps(norm).encode()).hexdigest()}"
+
+
+def cache_get(key):
+    return _cache().get(key)
+
+
+def cache_put(key, answer, expires):
+    c = _cache()
+    c[key] = {"answer": answer, "expires": expires}
+    CACHE.parent.mkdir(exist_ok=True)
+    CACHE.write_text(json.dumps(c))
+
+
+def cache_drop(actor_id):
+    if CACHE.exists():
+        CACHE.write_text(json.dumps(_cache(drop_actor=actor_id)))
 
 
 def history(actor_id=None):
@@ -106,11 +196,13 @@ def gated(action, key, quote, execute):
     later user turn whose text is an explicit yes, so a write can never happen in the turn it was proposed."""
     if not S.get("guest_verified"):
         return {"error": "caller not verified"}
+    S["touched_write"] = True
     k = (action, key)
     p = S["pending"].get(k)
     if p and p["turn"] < S["turn"] and AFFIRM.match(S["last_user"]):
         del S["pending"][k]
         r = execute(p["quote"])
+        S["wrote"] = "error" not in r
         return r if "error" in r else {"status": "done", **r}
     if not p or p["turn"] != S["turn"]:
         q = quote()
@@ -139,4 +231,22 @@ if __name__ == "__main__":
     assert gated("cancel", "ord_1", q, x)["status"] == "needs_confirmation" and len(runs) == 1, "pending is single use"
     S["guest_verified"] = False
     assert "error" in gated("cancel", "ord_1", q, x)
+
+    CACHE = Path(os.environ.get("TMPDIR", "/tmp")) / "travel_concierge_cache_check.json"
+    CACHE.unlink(missing_ok=True)
+    k = cache_key("cust_a", ["Find  me a flight", "to LHR"])
+    assert k == cache_key("cust_a", ["find me a flight", "to lhr "]) and k != cache_key(
+        "cust_b", ["find me a flight", "to lhr"]
+    )
+    assert k != cache_key("cust_a", ["to LHR"]), "earlier turns are part of the key"
+    cache_put(k, "answer", time.time() + 60)
+    cache_put("cust_a:old", "stale", time.time() - 1)
+    cache_put("cust_b:x", "other", time.time() + 60)
+    assert cache_get(k)["answer"] == "answer" and cache_get("cust_a:old") is None
+    cache_drop("cust_a")
+    assert cache_get(k) is None and cache_get("cust_b:x")["answer"] == "other", "drop is per traveler"
+    user_turn("x")
+    note_expiry([{"expires_at": "2026-10-18T10:00:00Z"}, {"expires_at": "2026-10-18T09:00:00Z"}, {}])
+    assert S["expires"] == dt.datetime(2026, 10, 18, 9, tzinfo=dt.timezone.utc).timestamp()
+    CACHE.unlink()
     print("common: ok")

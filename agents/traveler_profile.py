@@ -4,7 +4,7 @@ Step 3 adds AgentCore Memory (preferences, facts, summaries) to get_history."""
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-from strands import Agent, tool
+from strands import tool
 
 import common
 
@@ -70,7 +70,7 @@ Never infer habits beyond what the counts and memory records state."""
 
 
 def run(question: str) -> str:
-    agent = Agent(model=common.model("profile"), system_prompt=PROMPT, tools=[get_history], callback_handler=None)
+    agent = common.agent("profile", system_prompt=PROMPT, tools=[get_history])
     return str(agent(question))
 
 

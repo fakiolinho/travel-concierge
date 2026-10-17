@@ -167,6 +167,32 @@ holds the same routing and grounding scores.
 Override any agent with `MODEL_ID_<ROLE>` in `.env`, e.g. `MODEL_ID_FLIGHT_OPS=us.anthropic.claude-haiku-5-5`.
 Like a prompt change, a model change needs an eval run before it is merged.
 
+## Timing, caching and traces
+
+Every turn ends with a timing line, read from Strands' built in metrics (`agent.event_loop_metrics`):
+
+```
+⏱ 22.2s total | traveler_profile 9.1s · desk model 5.6s · flight_ops 4.6s
+```
+
+**Caching**, two layers:
+- Bedrock prompt caching (Strands `CacheConfig(strategy="auto")` on every model) reuses the system prompt, tool
+  specs and earlier turns between model calls. It speeds up the first token, it does not skip generation.
+- An answer cache (`.cache/answers.json`, ours, neither Strands nor AgentCore has one) replays the answer when the
+  same traveler asks the same questions in the same order. Only read only turns are cached, until the earliest
+  offer expiry they showed (max 10 min). Any executed write clears that traveler's entries. Delete the file to reset.
+
+**Traces** use Strands' built in OpenTelemetry tracing, written as one JSON span per line to
+`logs/traces-YYYY-MM-DD.jsonl`. Spans nest desk → tool → specialist agent → model call, carry start and end
+timestamps, token usage and inputs/outputs, and are tagged with `session.id`, `actor.id` and `agent.role`.
+List one session's spans in order:
+
+```bash
+jq -c 'select(.attributes["session.id"]=="desk-<id>") | [.start_time, .name, .parent_id]' logs/traces-*.jsonl
+```
+
+In step 4 the same spans go to AgentCore Observability (CloudWatch) instead of a file.
+
 ## Checks
 
 Each module with non trivial logic has an assert based self check that needs no network and no AWS:

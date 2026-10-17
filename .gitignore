@@ -5,3 +5,5 @@ __pycache__/
 .bedrock_agentcore*
 .idea/
 .claude/worktrees/
+logs/
+.cache/
