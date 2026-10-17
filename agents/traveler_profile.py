@@ -1,10 +1,9 @@
-"""Traveler Profile specialist. Step 2: structured history from evals/fixtures/history.json only.
-Step 3 adds AgentCore Memory (preferences, facts, summaries) to get_history."""
+"""Traveler Profile: bookings history (evals/fixtures/history.json) + AgentCore Memory, as one record.
+Plain code, not an agent: it is a lookup, and the desk loads it once per session (no model hop per turn)."""
 
+import json
 from collections import Counter, defaultdict
 from decimal import Decimal
-
-from strands import tool
 
 import common
 
@@ -48,30 +47,33 @@ def summarize(actor_id, trips):
     }
 
 
-@tool
-def get_history() -> dict:
+def load(actor_id):
     """The verified traveler's record: routes, airports, airlines, cabins, orders (from bookings) plus preferences,
-    facts and recent session summaries (from AgentCore Memory)."""
-    actor = common.S["actor_id"]  # the session's verified actor, never a model supplied id
-    record = summarize(actor, common.history())
+    facts and recent session summaries (from AgentCore Memory). Loaded once per session into the desk's prompt."""
+    record = summarize(actor_id, common.history(actor_id))
     if common.MEMORY_ID:
-        m = common.memory_records(actor)
-        record.update(preferences=m["preferences"], facts=m["facts"], recent_session_summaries=m["summaries"][:5])
+        m = common.memory_records(actor_id)
+        record.update(
+            preferences=compact_preferences(m["preferences"])[:12],
+            # ponytail: newest N, not most relevant, to keep the prompt (and time to first token) small.
+            # Upgrade: semantic retrieval on the caller's question once Gateway/Runtime are in (step 4).
+            facts=m["facts"][:15],
+            recent_session_summaries=[" ".join(s.split())[:600] for s in m["summaries"][:2]],
+        )
     return record
 
 
-PROMPT = """You are Traveler Profile at an airline service desk. Answer the desk's question about the
-verified traveler using only get_history. Call it every time. Return compact JSON with the keys
-past_routes, preferred_airports, preferences, facts, open_issues, plus anything else from the record the
-question needs (copy order ids and amounts verbatim). open_issues are unresolved problems named in facts or
-recent_session_summaries. Prices, order ids and routes come only from the bookings part of the record, never
-from memory text. If the record does not contain the answer, say "not in record".
-Never infer habits beyond what the counts and memory records state."""
-
-
-def run(question: str) -> str:
-    agent = common.agent("profile", system_prompt=PROMPT, tools=[get_history])
-    return str(agent(question))
+def compact_preferences(records):
+    """UserPreference records are JSON with context/categories; the desk only needs the preference sentence."""
+    out = []
+    for r in records:
+        try:
+            r = json.loads(r).get("preference") or r
+        except (ValueError, AttributeError):
+            pass
+        if r not in out:
+            out.append(r)
+    return out
 
 
 if __name__ == "__main__":
@@ -93,4 +95,6 @@ if __name__ == "__main__":
     assert s["trip_count"] == 3 and s["preferred_airports"] == ["ATH", "SKG"]
     assert s["past_routes"][0] == {"route": "ATH-LHR", "count": 2, "avg_total": "125.00", "currency": "EUR"}
     assert [o["order_id"] for o in s["orders"]] == ["ord_0", "ord_1", "ord_2"] and "departure" not in str(s)
+    prefs = ['{"context": "x", "preference": "Aisle seat", "categories": []}', "Aisle seat", "plain text"]
+    assert compact_preferences(prefs) == ["Aisle seat", "plain text"]
     print("traveler_profile: ok")

@@ -1,9 +1,5 @@
-"""Policy specialist: desk rules + the fare conditions Duffel attaches to an order."""
-
-from strands import tool
-
-import common
-from tools import duffel
+"""Desk policy rules. Short enough to sit in the desk's prompt, so no tool call or agent hop is needed.
+Order specific fare conditions come with get_order."""
 
 # ponytail: rules inline as text. Upgrade: Bedrock Knowledge Base + Guardrails grounding check (step 4).
 RULES = {
@@ -21,35 +17,3 @@ RULES = {
     "Not owed for extraordinary circumstances (weather, ATC, security). Care (meals, hotel) is owed "
     "regardless. The desk quotes this rule; it does not promise a payout.",
 }
-
-
-@tool
-def get_rule(topic: str) -> str:
-    """Desk policy text for a topic.
-
-    Args:
-        topic: one of change, refund, 24h, disruption
-    """
-    return RULES.get(topic) or f"unknown topic; available: {', '.join(RULES)}"
-
-
-@tool
-def fare_conditions(order_id: str) -> dict:
-    """Change and refund conditions of one of the traveler's orders, as set by the fare.
-
-    Args:
-        order_id: Duffel order id
-    """
-    common.owned(order_id)
-    o = duffel.norm_order(duffel.call("GET", f"/orders/{order_id}"))
-    return {k: o[k] for k in ("order_id", "status", "total", "currency", "conditions", "slices")}
-
-
-PROMPT = """You are Policy at an airline service desk. Answer using only get_rule and fare_conditions.
-Quote the rule text and the order's conditions that apply, then state the outcome in one or two sentences.
-Never invent amounts, compensation or exceptions. If no rule covers the question, say so."""
-
-
-def run(question: str) -> str:
-    agent = common.agent("policy", system_prompt=PROMPT, tools=[get_rule, fare_conditions])
-    return str(agent(question))

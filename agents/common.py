@@ -18,13 +18,11 @@ if (ROOT / ".env").exists():
         if sep and not k.lstrip().startswith("#"):
             os.environ.setdefault(k.strip(), v.strip())
 
-# Sized per job: the desk and Flight Ops hold conversations and multi step writes; Profile and Policy look things up.
+# Two agents: the desk holds the conversation and the reads; Flight Ops makes the writes.
 # Override any of them with MODEL_ID_<ROLE> in .env. Re-run evals before changing a default.
 MODELS = {
     "desk": "us.anthropic.claude-sonnet-5-5",
     "flight_ops": "us.anthropic.claude-sonnet-5-5",
-    "profile": "us.anthropic.claude-haiku-5-5",
-    "policy": "us.anthropic.claude-haiku-5-5",
 }
 MODELS = {role: os.environ.get(f"MODEL_ID_{role.upper()}", m) for role, m in MODELS.items()}
 HISTORY = ROOT / "evals/fixtures/history.json"
@@ -118,7 +116,6 @@ def start(actor_id, session_id=None):
         turn=0,
         last_user="",
         pending={},
-        profile_turn=None,
     )
 
 

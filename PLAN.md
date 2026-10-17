@@ -6,21 +6,24 @@ Prove a production grade pattern for contact center agents: multi agent orchestr
 
 ## Architecture
 ```
-Caller ─► Travel Desk (orchestrator, AgentCore Runtime)
-            │ writes the conversation to Memory; reads Memory only through Traveler Profile
-            ├─► Flight Ops        Duffel: search_flights, get_order, list_orders, change_order*, cancel_order*, add_bag*, seat_map
-            ├─► Traveler Profile  structured history (Duffel orders by actor) + AgentCore Memory (prefs, facts, summaries)
-            └─► Policy            fare rules KB, refund/change rules, 24h rule, disruption compensation rules
+Caller ─► Travel Desk (agent, AgentCore Runtime)
+            │ prompt holds: Traveler Profile record (Duffel orders by actor + AgentCore Memory prefs, facts, summaries),
+            │               loaded once per session; Policy rules (refund/change, 24h, disruption compensation)
+            │ writes the conversation to Memory, never retrieves from it directly
+            ├─► Duffel read tools  search_flights, get_order, list_orders, seat_map, change_options, bag_options
+            └─► Flight Ops (agent) change_order*, cancel_order*, add_bag*
             * = write tool, Cedar gated
 ```
-Pattern: Strands "agents as tools". One process at first; split to A2A on separate Runtimes only if needed.
+Pattern: one desk agent with direct read tools; agents as tools only for writes (Flight Ops). Changed from
+"agents as tools for everything" for latency: each agent hop cost 3 to 9s, the target is a 2 to 3s turn.
+Profile and Policy are lookups, so they are loaded into the prompt instead of being agents.
 
 ## Orchestrator loop
 1. Verify caller → `actor_id`, `guest_verified=true`.
-2. Always call Traveler Profile before any search. Returns compact JSON: past_routes, preferred_airports, preferences, open_issues.
-3. Call Flight Ops with request + profile constraints.
-4. Anything touching money or a change → Policy first, then present options.
-5. Explicit confirmation turn → Flight Ops executes write.
+2. Session start: load the Traveler Profile record (past_routes, preferred_airports, preferences, facts, summaries) into the prompt.
+3. Reads (search, orders, seats, change/bag options) with the desk's own tools, constrained by the profile.
+4. Anything touching money or a change → apply the Policy rules in the prompt, then present options.
+5. Write → Flight Ops quotes; explicit confirmation turn → Flight Ops executes.
 6. Session summary auto written to Memory.
 
 ## Memory
@@ -29,7 +32,8 @@ Resource: `TravelConciergeMemory`
 - Semantic        → `/users/{actorId}/facts/`
 - Summary         → `/summaries/{actorId}/{sessionId}/`
 Strands: `AgentCoreMemorySessionManager(AgentCoreMemoryConfig(memory_id, session_id, actor_id))` on the desk, flush on exit.
-Persistence only, no retrieval_config: every historical claim must trace to a traveler_profile tool result.
+Persistence only, no retrieval_config: every historical claim must trace to the profile record loaded at session start.
+Messages are batched (flush every 30s and on close) so persistence adds no time inside a turn.
 Seed with 10 to 15 scripted past sessions per traveler so extractors have real material.
 Structured history (prices, routes, dates) comes from Duffel orders, never from LLM memory.
 

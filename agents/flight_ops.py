@@ -1,5 +1,6 @@
-"""Flight Ops specialist: Duffel reads plus the three write tools (change_order, cancel_order, add_bag).
-Write tools go through common.gated, so they need a later user turn with an explicit yes before they run."""
+"""Flight Ops: Duffel tools. The read tools are called by the desk directly (no agent hop). The write tools
+(change_order, cancel_order, add_bag) belong to the Flight Ops agent only, the principal Cedar will allow to write
+in step 4. Writes go through common.gated, so they need a later user turn with an explicit yes before they run."""
 
 import datetime as dt
 from decimal import Decimal
@@ -19,7 +20,7 @@ def search_flights(
     adults: int = 1,
     cabin_class: str = "economy",
 ) -> list:
-    """Search flight offers. Returns the 5 cheapest offers.
+    """Search flight offers. Returns the 3 cheapest offers.
 
     Args:
         origin: IATA airport code, e.g. ATH
@@ -34,14 +35,15 @@ def search_flights(
         slices.append({"origin": destination, "destination": origin, "departure_date": return_date})
     req = duffel.call(
         "POST",
-        "/offer_requests?return_offers=true",
+        # supplier_timeout caps how long Duffel waits on airlines: test mode searches otherwise take up to 20s.
+        "/offer_requests?return_offers=true&supplier_timeout=2000",
         {"slices": slices, "passengers": [{"type": "adult"}] * adults, "cabin_class": cabin_class},
     )
     # ponytail: Duffel Airways (ZZ) only so evals are reproducible. Upgrade: drop the filter outside test mode.
     offers = sorted(
         (o for o in req["offers"] if o["owner"]["iata_code"] == "ZZ"), key=lambda o: Decimal(o["total_amount"])
     )
-    out = [duffel.norm_offer(o) for o in offers[:5]]
+    out = [duffel.norm_offer(o) for o in offers[:3]]
     common.note_expiry(out)
     return out
 
@@ -228,28 +230,19 @@ def add_bag(order_id: str, service_id: str, quantity: int = 1) -> dict:
     return common.gated("add_bag", (order_id, service_id, quantity), quote, execute)
 
 
-PROMPT = """You are Flight Ops at an airline service desk. Now is {now} UTC; all Duffel timestamps are UTC.
-You act on behalf of one verified traveler; their orders are the only ones you can see.
-- Every fact you report (prices, refunds, times, order ids, offer ids) must come verbatim from a tool result in this request. Never estimate.
-- change_order, cancel_order and add_bag are writes. Their first call returns status needs_confirmation with a quote: report the exact quote and stop. Call them again only when the request says the traveler explicitly confirmed that exact action.
-- To change dates use change_options first, then change_order with the chosen change_offer_id. For bags use bag_options first.
-- Reply with a short factual summary and include the relevant ids so the desk can refer back to them."""
+READ_TOOLS = [search_flights, get_order, list_orders, seat_map, change_options, bag_options]
+
+PROMPT = """You are Flight Ops at an airline service desk. Now is {now} UTC. You make changes to one verified
+traveler's bookings: change_order, cancel_order, add_bag. Call exactly the write the request names, with its ids.
+The first call returns status needs_confirmation with a quote: report the exact quote and stop. Call again only
+when the request says the traveler explicitly confirmed that exact action. Report amounts and ids verbatim from the
+tool result in one or two lines. Never estimate."""
 
 
 def run(request: str) -> str:
     agent = common.agent(
         "flight_ops",
         system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")),
-        tools=[
-            search_flights,
-            get_order,
-            list_orders,
-            seat_map,
-            change_options,
-            bag_options,
-            change_order,
-            cancel_order,
-            add_bag,
-        ],
+        tools=[get_order, change_order, cancel_order, add_bag],
     )
     return str(agent(request))

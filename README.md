@@ -1,8 +1,8 @@
 # travel_concierge
 
-A multi agent airline service desk on Amazon Bedrock AgentCore. A Travel Desk orchestrator routes each caller
-request to three specialist agents (Flight Ops, Traveler Profile, Policy), books against Duffel in test mode,
-and is graded by layered evals. `PLAN.md` has the full design and the step order.
+A multi agent airline service desk on Amazon Bedrock AgentCore. A Travel Desk agent answers callers using Duffel
+(test mode), the traveler's record (bookings plus AgentCore Memory) and the desk policy, and hands every booking
+change to a Flight Ops agent. It is graded by layered evals. `PLAN.md` has the full design and the step order.
 
 **Status: step 3 of 6.** The agents run locally against Duffel directly, with AgentCore Memory for traveler
 preferences, facts and session summaries. Gateway, Cedar, Guardrails and evals come in later steps
@@ -11,18 +11,22 @@ preferences, facts and session summaries. Gateway, Cedar, Guardrails and evals c
 ## How it works
 
 ```
-caller ─► Travel Desk (agents/travel_desk.py)
-            ├─► traveler_profile ─► Traveler Profile agent ─► get_history: bookings (evals/fixtures/history.json)
-            │                                                  + AgentCore Memory (preferences, facts, summaries)
-            ├─► flight_ops       ─► Flight Ops agent ─► Duffel: search, orders, seats, change/bag options,
-            │                                          change_order*, cancel_order*, add_bag*
-            └─► policy           ─► Policy agent ─► desk rules + order fare conditions
+session start: traveler record = bookings (evals/fixtures/history.json) + AgentCore Memory  ─┐
+               policy rules (agents/policy.py)                                              ─┤ into the desk prompt
+                                                                                             ▼
+caller ─► Travel Desk agent (agents/travel_desk.py)
+            ├─► Duffel read tools: search_flights, get_order, list_orders, seat_map, change_options, bag_options
+            └─► flight_ops ─► Flight Ops agent ─► change_order*, cancel_order*, add_bag*
             * write: quote first, executes only after the traveler says yes in a later turn
 ```
 
-Each specialist is a Strands `Agent` wrapped in a `@tool` function ("agents as tools"). A fresh specialist is
-created for every call, so specialists keep no state between calls. The session (verified actor, turn counter,
-pending writes) lives in `agents/common.py`.
+Why this shape: a caller turn has to answer in a few seconds, and every agent hop costs 3 to 9 seconds of extra
+model calls. The traveler record and the policy rules are lookups, so they are loaded once per session into the
+desk's prompt (no tool call, no hop). The desk calls Duffel reads itself. Only writes go to a second agent, Flight
+Ops, because it is the one principal Cedar will allow to write in step 4. Measured on a live run: a profile
+question 1.8s, booking status 3.2s, a flight search 5.2s, first words of every answer after about 1.4s.
+
+The session (verified actor, turn counter, pending writes) lives in `agents/common.py`.
 
 What the code enforces, regardless of what the model decides:
 
@@ -30,10 +34,10 @@ What the code enforces, regardless of what the model decides:
 |---|---|
 | A write runs only after a later user turn whose text starts with an explicit yes | `common.gated` |
 | Tools only see orders that belong to the verified actor | `common.owned`, `common.history` |
-| The profile tool takes no actor argument, so it cannot read another traveler | `traveler_profile.get_history` |
+| The traveler record is loaded for the session's verified actor only, never a model supplied id | `traveler_profile.load` |
 | Memory is read only under the session actor's namespaces, and stray records are dropped | `common.memory_records` |
-| The desk persists conversations to Memory but never retrieves from it directly, so history comes only via the profile tool | `travel_desk.memory_session` |
-| Flight Ops refuses until Traveler Profile has been called in the session | `travel_desk.flight_ops` |
+| The desk persists conversations to Memory but never retrieves from it on its own; history comes only from the record loaded at session start | `travel_desk.memory_session` |
+| Only the Flight Ops agent has the write tools | `flight_ops.run`, `flight_ops.READ_TOOLS` |
 | Models never see raw Duffel JSON or the Duffel token | `tools/duffel.py` (`norm_*`) |
 
 Other rules (prices only from tool results, "you usually..." claims backed by the profile) are in the prompts
@@ -59,7 +63,7 @@ It runs locally and needs no API key, but it pulls in torch, so it is kept out o
 | `DUFFEL_TEST_TOKEN` | everything | Test tokens only; the client refuses anything else |
 | `AWS_REGION` | agents | Defaults to `us-east-1` |
 | `MEMORY_ID` | agents | AgentCore Memory id printed by `scripts/create_memory.py`. Empty runs without Memory |
-| `MODEL_ID_DESK`, `MODEL_ID_FLIGHT_OPS`, `MODEL_ID_PROFILE`, `MODEL_ID_POLICY` | agents | Optional per agent override of the Bedrock inference profile, see [Models](#models) |
+| `MODEL_ID_DESK`, `MODEL_ID_FLIGHT_OPS` | agents | Optional per agent override of the Bedrock inference profile, see [Models](#models) |
 
 AWS credentials come from the normal boto3 chain. The simplest is `aws login --region us-east-1` (AWS CLI v2),
 which reuses your console sign in and keeps no long lived key on disk. An IAM access key via `aws configure` also works.
@@ -146,25 +150,21 @@ uv run python agents/travel_desk.py --actor cust_marios
 
 ## Models
 
-Each agent gets the smallest model that does its job reliably, set in `MODELS` in `agents/common.py`:
+Both agents run on `us.anthropic.claude-sonnet-5-5`, set in `MODELS` in `agents/common.py`:
 
-| Agent | Default | Why |
-|---|---|---|
-| Travel Desk | `us.anthropic.claude-sonnet-5-5` | Holds the conversation, decides routing, enforces the profile → policy → confirm order. Mistakes here cost the most. |
-| Flight Ops | `us.anthropic.claude-sonnet-5-5` | Chains several tools (change options → quote → confirm) and is the only agent that can write. |
-| Traveler Profile | `us.anthropic.claude-haiku-5-5` | One tool call, then reshape the JSON. No judgement needed. |
-| Policy | `us.anthropic.claude-haiku-5-5` | Looks up a rule and quotes it. The rules are fixed text, so a small model is enough. |
+| Agent | Why Sonnet |
+|---|---|
+| Travel Desk | Holds the conversation, picks tools, applies policy and asks for confirmation. Mistakes here cost the most. |
+| Flight Ops | Makes the writes. It must pass the right ids and stop at the quote. |
 
-Why not one big model everywhere: a contact center answers every turn live, so latency and cost per call matter.
-One caller turn can make 3 to 5 model calls across agents. Opus class models were tried first and are slower and
-pricier than this workload needs. Anthropic list prices per million input/output tokens: Opus 5.5 $4/$20,
-Sonnet 5.5 $2/$10, Haiku 5.5 $0.10/$0.50 (Bedrock pricing differs; check the Bedrock pricing page).
+Traveler Profile and Policy used to be Haiku agents. They are now plain lookups loaded into the desk prompt, which
+was faster than any model. Measured per call on Bedrock: Sonnet 5.5 and Haiku 5.5 both take about 1 to 1.4s for a
+short answer, and lowering the effort setting made no measurable difference, so Haiku would not buy speed here.
+Opus class models were tried first and are slower and pricier than this workload needs. Anthropic list prices per
+million input/output tokens: Opus 5.5 $4/$20, Sonnet 5.5 $2/$10, Haiku 5.5 $0.10/$0.50 (Bedrock pricing differs).
 
-Why not small everywhere: the desk and Flight Ops make the decisions the hard rules depend on (when to ask for
-confirmation, which ids to act on). Those stay on Sonnet until the eval set (steps 5 and 6) shows a smaller model
-holds the same routing and grounding scores.
-
-Override any agent with `MODEL_ID_<ROLE>` in `.env`, e.g. `MODEL_ID_FLIGHT_OPS=us.anthropic.claude-haiku-5-5`.
+Override either agent with `MODEL_ID_DESK` or `MODEL_ID_FLIGHT_OPS` in `.env`, e.g.
+`MODEL_ID_FLIGHT_OPS=us.anthropic.claude-haiku-5-5`.
 Like a prompt change, a model change needs an eval run before it is merged.
 
 ## Timing, caching and traces
@@ -172,7 +172,7 @@ Like a prompt change, a model change needs an eval run before it is merged.
 Every turn ends with a timing line, read from Strands' built in metrics (`agent.event_loop_metrics`):
 
 ```
-⏱ 22.2s total | traveler_profile 9.1s · desk model 5.6s · flight_ops 4.6s
+⏱ 5.2s total | desk model 2.9s · search_flights 1.3s
 ```
 
 **Caching**, two layers:
@@ -183,7 +183,7 @@ Every turn ends with a timing line, read from Strands' built in metrics (`agent.
   offer expiry they showed (max 10 min). Any executed write clears that traveler's entries. Delete the file to reset.
 
 **Traces** use Strands' built in OpenTelemetry tracing, written as one JSON span per line to
-`logs/traces-YYYY-MM-DD.jsonl`. Spans nest desk → tool → specialist agent → model call, carry start and end
+`logs/traces-YYYY-MM-DD.jsonl`. Spans nest desk → tool → (Flight Ops agent) → model call, carry start and end
 timestamps, token usage and inputs/outputs, and are tagged with `session.id`, `actor.id` and `agent.role`.
 List one session's spans in order:
 
@@ -217,8 +217,8 @@ uv run ruff format .
 agents/
   travel_desk.py       orchestrator + REPL
   flight_ops.py        Duffel read and write tools
-  traveler_profile.py  bookings summary + Memory records
-  policy.py            desk rules + fare conditions
+  traveler_profile.py  traveler record: bookings summary + Memory records (plain code, loaded per session)
+  policy.py            desk policy rules (plain text, in the desk prompt)
   common.py            model factory, session, ownership, confirmation gate, Memory reads
 tools/duffel.py        Duffel client + normalizers
 scripts/

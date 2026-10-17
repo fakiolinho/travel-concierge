@@ -1,6 +1,8 @@
-"""Travel Desk orchestrator. Specialists are Strands tools (agents as tools). Local run, Duffel direct, no Gateway.
+"""Travel Desk orchestrator. Local run, Duffel direct, no Gateway.
 
-Usage: uv run python agents/travel_desk.py --actor cust_marios
+The desk calls the read tools itself and has the traveler profile and the policy rules in its prompt, so a read
+turn costs two model calls plus one Duffel call. Only writes go to another agent (Flight Ops), the one principal
+allowed to write. Usage: uv run python agents/travel_desk.py --actor cust_marios
 """
 
 import argparse, datetime as dt, json, os, time, uuid
@@ -11,76 +13,71 @@ import common, flight_ops as fo, policy as pol, traveler_profile as tp
 
 
 @tool
-def traveler_profile(question: str) -> str:
-    """Ask Traveler Profile about the verified traveler: past routes, preferred airports, preferences,
-    open issues, past order ids. Required before any flight search, and before any claim about their history.
-
-    Args:
-        question: what the desk needs to know
-    """
-    common.S["profile_turn"] = common.S["turn"]
-    return tp.run(question)
-
-
-@tool
 def flight_ops(request: str) -> str:
-    """Ask Flight Ops to search flights, read orders, seat maps, change or bag options, or perform a
-    change_order / cancel_order / add_bag. Include the ids and constraints it needs.
+    """Hand a write to Flight Ops: change_order (with change_offer_id from change_options), cancel_order, or
+    add_bag (with service_id from bag_options). Say whether the traveler has explicitly confirmed the quoted action.
 
     Args:
-        request: the task, with order/offer ids and profile constraints; for a write, say whether the
-            traveler has explicitly confirmed the quoted action
+        request: the write, with order id and the offer or service id it needs, and the confirmation status
     """
-    if common.S["profile_turn"] is None:
-        return "Refused: call traveler_profile first."
     return fo.run(request)
 
 
-@tool
-def policy(question: str) -> str:
-    """Ask Policy about change, refund, 24h and disruption rules, and an order's fare conditions.
-    Required before presenting anything that touches money or a change.
+PROMPT = """You are the Travel Desk of an airline contact center, on a live call. Now is {now} UTC; all Duffel
+timestamps are UTC. The caller is verified as {actor_id}. You only ever act for this traveler.
 
-    Args:
-        question: the situation, including the order id if there is one
-    """
-    return pol.run(question)
+How to work:
+- Before a tool call, say one short sentence of what you are checking, then call it.
+- Flights to a city: search the airport the traveler has used for that city in their record; if none, the main
+  airport. Search other airports only if asked. One search per question unless the traveler asks for more.
+- Bookings: get_order or list_orders. Date changes: change_options. Bags: bag_options. Seats: seat_map.
+- Anything touching money, a refund, a change or compensation: apply the policy rules below.
+- Writes (change, cancel, add bag): call flight_ops; it returns a quote. Read it back exactly and ask for an
+  explicit yes. Only after the traveler says yes in a later message, call flight_ops again stating they confirmed.
 
-
-PROMPT = """You are the Travel Desk of an airline contact center. Now is {now} UTC; all Duffel timestamps are UTC.
-The caller is verified as {actor_id}. You only ever act for this traveler.
-Loop:
-1. Call traveler_profile first in a conversation and whenever you are about to say anything about the traveler's history.
-2. Call flight_ops with the request plus relevant profile constraints (preferred airports, usual cabin).
-3. Anything touching money, a refund, a change or compensation: call policy first, then present options.
-4. Writes (change, cancel, add bag): flight_ops returns a quote. Read it back exactly and ask for an explicit yes.
-   Only after the traveler says yes in a later message, call flight_ops again stating they confirmed.
 Rules:
-- Prices, refund amounts and order ids come only from specialist results in this conversation. Never recall or estimate them.
-- Any "you usually..." claim must be backed by a traveler_profile result from this turn.
+- Prices, refund amounts and order ids come only from tool results in this conversation. Never recall or estimate.
+- "You usually..." and any other claim about the traveler's history must come from the traveler record below.
 - Out of scope (visas, medical advice, other travelers' bookings): decline briefly.
-- Be short and plain, like a good phone agent."""
+- Answer like a good phone agent: at most 5 short lines, at most 3 options, no tables, no headings.
+
+Policy rules:
+{rules}
+
+Traveler record (bookings history and AgentCore Memory, loaded at the start of this call):
+{profile}"""
 
 
 def memory_session(actor_id, session_id):
     """Persist this conversation to AgentCore Memory so the extractors can learn from it. Persistence only: no
-    retrieval_config, because every historical claim has to come through a traveler_profile tool call."""
+    retrieval_config, because the traveler record is loaded once, explicitly, by traveler_profile.load."""
     if not common.MEMORY_ID:
         return None
     from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
     from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 
-    cfg = AgentCoreMemoryConfig(memory_id=common.MEMORY_ID, session_id=session_id, actor_id=actor_id)
+    # Batched: one create_event per message costs ~0.4s inside every turn. Buffer and flush every 30s and on close.
+    # ponytail: a crash loses up to 30s of conversation from Memory. Upgrade: Runtime session lifecycle (step 4).
+    cfg = AgentCoreMemoryConfig(
+        memory_id=common.MEMORY_ID, session_id=session_id, actor_id=actor_id, batch_size=100, flush_interval_seconds=30
+    )
     return AgentCoreMemorySessionManager(cfg, region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 
 def build(actor_id, session_manager=None, session_id=None):
     common.start(actor_id, session_id)
+    profile = tp.load(actor_id)
+    rules = "\n".join(f"- {k}: {v}" for k, v in pol.RULES.items())
     return common.agent(
         "desk",
-        tools=[traveler_profile, flight_ops, policy],
+        tools=[*fo.READ_TOOLS, flight_ops],
         session_manager=session_manager,
-        system_prompt=PROMPT.format(now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"), actor_id=actor_id),
+        system_prompt=PROMPT.format(
+            now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            actor_id=actor_id,
+            rules=rules,
+            profile=json.dumps(profile, ensure_ascii=False),
+        ),
     )
 
 

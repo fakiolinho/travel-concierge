@@ -13,7 +13,7 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 - Region: us-east-1. Everything infra lives in `agentcore.json` / CDK, never console only.
 
 ## Layout
-- `agents/` orchestrator (`travel_desk.py`) + specialists (`flight_ops.py`, `traveler_profile.py`, `policy.py`). Specialists are exposed to the orchestrator as Strands tools.
+- `agents/` desk agent (`travel_desk.py`) with direct Duffel read tools; Flight Ops agent for writes (`flight_ops.py`); traveler record loader (`traveler_profile.py`) and policy rules (`policy.py`), both loaded into the desk prompt per session. Latency target: 2 to 3s per turn, so no agent hop for lookups.
 - `tools/` Duffel client + Lambda handlers for Gateway targets. Normalize Duffel JSON to our schema before it reaches any LLM.
 - `policies/` Cedar policies. Default deny. Only Flight Ops principal may call write tools.
 - `evals/` dataset JSONL, ground truth, code checks, Decider questions, AgentCore evaluator definitions.
@@ -22,7 +22,7 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 ## Hard rules
 - Agents never see raw API keys. Duffel token lives in Secrets Manager; Lambdas read it.
 - No write tool (`change_order`, `cancel_order`, `add_bag`) without an explicit confirmation turn in the same session.
-- Every "you usually..." / historical claim must be backed by a `traveler_profile` tool result in the current turn.
+- Every "you usually..." / historical claim must be backed by the traveler record loaded by `traveler_profile.load` for this session.
 - Prices, refund amounts, order ids are read from tool results, never recalled from memory or model.
 - Memory namespaces are scoped by actor_id. Cross actor retrieval is a hard failure in evals.
 - Cedar, prompts and eval dataset are versioned in git. A prompt change without an eval run is not merged.
