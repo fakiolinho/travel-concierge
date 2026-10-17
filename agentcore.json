@@ -5,9 +5,30 @@
     "description": "Traveler preferences, facts and session summaries for the Travel Desk. Namespaces scoped by actorId.",
     "event_expiry_days": 90,
     "strategies": [
-      {"userPreferenceMemoryStrategy": {"name": "preferences", "namespaceTemplates": ["/users/{actorId}/preferences/"]}},
-      {"semanticMemoryStrategy": {"name": "facts", "namespaceTemplates": ["/users/{actorId}/facts/"]}},
-      {"summaryMemoryStrategy": {"name": "summaries", "namespaceTemplates": ["/summaries/{actorId}/{sessionId}/"]}}
+      {
+        "userPreferenceMemoryStrategy": {
+          "name": "preferences",
+          "namespaceTemplates": [
+            "/users/{actorId}/preferences/"
+          ]
+        }
+      },
+      {
+        "semanticMemoryStrategy": {
+          "name": "facts",
+          "namespaceTemplates": [
+            "/users/{actorId}/facts/"
+          ]
+        }
+      },
+      {
+        "summaryMemoryStrategy": {
+          "name": "summaries",
+          "namespaceTemplates": [
+            "/summaries/{actorId}/{sessionId}/"
+          ]
+        }
+      }
     ]
   }
 }
