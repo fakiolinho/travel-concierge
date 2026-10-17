@@ -1,0 +1,13 @@
+[project]
+name = "travel-concierge"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "strands-agents",
+  "bedrock-agentcore",
+  "bedrock-agentcore-starter-toolkit",
+  "boto3",
+]
+
+[dependency-groups]
+evals = ["strands-decider==0.1.0"]

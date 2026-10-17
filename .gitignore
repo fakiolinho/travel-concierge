@@ -1,0 +1,6 @@
+.venv/
+.env
+evals/fixtures/
+__pycache__/
+.bedrock_agentcore*
+.idea/
