@@ -74,7 +74,13 @@ Disruption cases have real data sources (live METAR/TAF, Open-Meteo, holidays): 
 weather values: routed to the Disruption agent, evidence cites a tool source, beyond-horizon dates answered "no
 forecast yet" with the opening date, EU261 weather rule quoted without promising compensation, no write from the
 disruption path, rebooking only through the desk's quote and confirmation. Weather is not reproducible, so risk
-level checks use recorded TripIntel responses (Strands Evals tool simulation) rather than live calls.
+level checks use recorded TripIntel responses rather than live calls (as built: `stub_tools` in the case replays a
+recorded METAR/TAF/forecast through the same tool name and spec; deterministic, unlike Strands Evals' LLM generated
+tool simulation).
+As built (step 5/6): `evals/build_dataset.py` generates the 150 cases + 5 ActorSimulator conversations (non gating);
+`evals/run_offline.py` runs code checks (gate), Strands Evals judges (Haiku 5.5: Sonnet 5.5 rejects the forced
+tool_choice structured output falls back to), AgentCore built in + custom evaluators, and the Decider; results go to
+Phoenix experiments and CloudWatch (dashboard `TravelConcierge-Evals`). See README "Evals".
 Ground truth per case: expected tool sequence, expected price/order ids (code checked), expected end state.
 Judges:
 - code checks: price match, order id exists, sequence match, no write without confirm
@@ -82,7 +88,10 @@ Judges:
   as `noul` questions, confidence threshold calibrated against 50 human labelled transcripts
 - AgentCore built in: Helpfulness, Tool Selection Accuracy, Goal Success, Faithfulness
 - AgentCore custom: "historical claims match profile record; list unmatched", "quoted the Policy rule, did not invent compensation"
-Online: Decider every turn (`strands-decider serve`), LLM judge sampled, low confidence answers and disagreements → human review queue.
+  (as built: `historical_claims`, `policy_quoted` LLM judges on Sonnet 4.6, plus code based `amounts_grounded`;
+  AgentCore's TRACE context lacks the system prompt and recalled Memory, so its `historical_claims` stays advisory)
+Online (as built): AgentCore online evaluation `desk_online`, 25% of Runtime sessions. Decider every turn is still open
+(needs a host, see Known risks). Planned: Decider every turn (`strands-decider serve`), LLM judge sampled, low confidence answers and disagreements → human review queue.
 
 ## Step order
 1. Duffel test account. `scripts/seed_duffel_history.py` creates 15 to 20 past orders for 3 synthetic travelers (ATH heavy: ATH→LHR, ATH→JFK, ATH→CDG, SKG→MUC).

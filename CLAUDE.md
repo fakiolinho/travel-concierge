@@ -53,4 +53,11 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 - `agentcore deploy -y` deploy everything (needs `uv` on PATH; `cd agentcore/cdk && npm ci` once)
 - `uv run python scripts/check_gateway_policies.py` live Cedar + Lambda checks (`--writes` books and cancels one flight)
 - `agentcore invoke --runtime TravelDesk -H "X-Actor-Id: cust_marios" "..."` talk to the deployed desk
-- `uv run python evals/run_offline.py` code checks + Strands Decider over the dataset
+- `uv run --group evals python evals/run_offline.py` acceptance gate (deterministic checks, 22 cases); before merging
+  any prompt or agent change
+- `uv run --group evals python evals/run_offline.py --suite dataset --judges --agentcore --decider --cloudwatch
+  --label eval-<sha>` full eval (150 cases; Phoenix experiment + CloudWatch dashboard TravelConcierge-Evals)
+- `uv run python evals/build_dataset.py` regenerate `evals/dataset/` (review the diff)
+- `uv run --group evals python evals/run_runtime.py --batch` dataset subset on the deployed Runtime + AgentCore batch eval
+- `uv run --group evals python evals/calibrate_decider.py` Decider thresholds -> `evals/decider_thresholds.json`;
+  `evals/label_queue.py` lists transcripts to label in Phoenix (`human:<question>`)
