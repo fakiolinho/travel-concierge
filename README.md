@@ -401,7 +401,17 @@ not part of the gate yet (uncalibrated): answers below confidence 0.9 are labell
 Decider vs code agreement where a deterministic check exists (prices, writes). That agreement table is the start of
 the step 6 calibration. The runner reuses a server on `DECIDER_URL` (default `http://127.0.0.1:8765`) or starts
 `strands-decider serve` itself; the first start downloads the Qwen3.5-2B base (about 4 GB, ~7 min here) and it runs
-natively on Apple silicon (MPS), not in Docker.
+natively on Apple silicon (MPS), not in Docker. It takes about 5s per case on an M1 Pro.
+
+First baseline (2026-10-18): the Decider barely separates good from bad yet. `in_scope` reads 0.72 to 0.95,
+`claims_backed` sits at 0.65 to 0.72 everywhere, and `write_confirmed` is 0.22 to 0.37 on the 21 cases with no write
+but 0.60 on the one that wrote: a real signal, on the wrong side of 0.5. Agreement with the code checks: prices 8/22,
+writes 1/22. Expect that until step 6 calibrates thresholds per question against human labels.
+
+**Time and cost.** A full run is about 5.5 minutes for 22 cases (2 to 30s each; the three turn booking case is the
+longest), plus about 2 minutes with `--decider`. Every case is real Bedrock (Sonnet 5.5), Gateway, Lambda and Duffel
+test mode traffic; `book_then_yes` books one Duffel test order and cancels it again. AgentCore Memory is not written
+(no session manager in eval sessions), so runs do not teach the extractors anything.
 
 **In Phoenix** (http://localhost:6006):
 - *Datasets → travel-concierge-acceptance*: one example per case (turns in, expectations out).
