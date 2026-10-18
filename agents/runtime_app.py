@@ -11,7 +11,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 import travel_desk
 
 app = BedrockAgentCoreApp()
-desks = {}  # session id -> (desk agent, actor, pending interrupts)
+desks = {}  # session id -> (desk agent, actor); pending write interrupts live on desk.pending_writes
 
 ACTOR_HEADER = "x-actor-id"  # allowlisted in agentcore.json (requestHeaderAllowlist)
 
@@ -35,23 +35,22 @@ async def invoke(payload, context):
     sid = context.session_id
     if sid not in desks:
         desks.clear()  # one session per microVM; never carry another session's agent over
-        desk, _ = travel_desk.build(actor, travel_desk.memory_session(actor, sid), sid)
-        desks[sid] = (desk, actor, [])
-    desk, owner, pending = desks[sid]
+        desks[sid] = (travel_desk.build(actor, travel_desk.memory_session(actor, sid), sid), actor)
+    desk, owner = desks[sid]
     if owner != actor:
         yield "This session belongs to another traveler."
         return
-    msg = payload.get("prompt", "")
+    msg, pending = payload.get("prompt", ""), desk.pending_writes
     prompt = [{"interruptResponse": {"interruptId": i.id, "response": msg}} for i in pending] if pending else msg
     result = None
     async for event in desk.stream_async(prompt):
         if "data" in event:
             yield event["data"]
         result = event.get("result", result)
-    pending = list(result.interrupts or []) if result is not None and result.stop_reason == "interrupt" else []
-    for i in pending:
+    stopped = result is not None and result.stop_reason == "interrupt"
+    desk.pending_writes = list(result.interrupts or []) if stopped else []
+    for i in desk.pending_writes:
         yield f"\n\n{i.reason}"  # the quote; the caller's next message answers it
-    desks[sid] = (desk, actor, pending)
 
 
 if __name__ == "__main__":

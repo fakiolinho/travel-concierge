@@ -6,7 +6,7 @@ disruption questions to the Disruption agent, both Strands `Agent.as_tool`. A wr
 interrupt carrying the quote; the caller's next message is the interrupt response.
 """
 
-import argparse, datetime as dt, json, time, uuid
+import argparse, datetime as dt, json, os, time, uuid
 
 import common, disruption as dis, flight_ops as fo, policy as pol, traveler_profile as tp
 
@@ -61,7 +61,8 @@ def memory_session(actor_id, session_id):
 
 
 def build(actor_id, session_manager=None, session_id=None):
-    """The desk for one call, plus the TurnLog its answer cache reads."""
+    """The desk agent for one call. It carries the TurnLog its answer cache reads (`desk.turn_log`) and the write
+    interrupts waiting for the caller's answer (`desk.pending_writes`)."""
     common.warm_gateways("desk", "flight_ops", "disruption")  # handshakes run while the record loads
     state = common.session_state(actor_id, session_id)
     log = common.TurnLog()
@@ -85,15 +86,25 @@ def build(actor_id, session_manager=None, session_id=None):
             profile=json.dumps(profile, ensure_ascii=False),
         ),
     )
-    return desk, log
+    desk.turn_log, desk.pending_writes = log, []
+    return desk
 
 
-def ask(desk, msg, pending):
-    """One caller message: a resume when a write is waiting for confirmation, otherwise a new turn. Returns the
-    AgentResult and the interrupts now pending (the quote the caller has to answer)."""
+def ask(desk, msg):
+    """One caller message: the answer to a pending write quote (a Strands interrupt resume) or a new turn. Returns
+    the AgentResult; the quotes now waiting for the caller are in desk.pending_writes."""
+    pending = desk.pending_writes
     prompt = [{"interruptResponse": {"interruptId": i.id, "response": msg}} for i in pending] if pending else msg
     result = desk(prompt)
-    return result, list(result.interrupts or []) if result.stop_reason == "interrupt" else []
+    desk.pending_writes = list(result.interrupts or []) if result.stop_reason == "interrupt" else []
+    return result
+
+
+def respond(desk, msg):
+    """One caller turn as text (the eval runner's entry point): the desk's answer, then any quote it asks to confirm."""
+    desk.turn_log.reset()
+    result = ask(desk, msg)
+    return "\n\n".join([str(result).strip(), *(i.reason for i in desk.pending_writes)]).strip()
 
 
 def main():
@@ -105,14 +116,14 @@ def main():
     session_id = f"desk-{uuid.uuid4()}"
     traces = common.setup_tracing()
     sm = memory_session(actor, session_id)
-    desk, log = build(actor, sm, session_id)
+    desk = build(actor, sm, session_id)
     print(f"Travel Desk {common.MODELS}, memory {common.MEMORY_ID or 'off'}. Empty line to quit.")
     print(f"Session {session_id}, traces: {traces}")
-    asked, pending = [], []
+    asked = []
     try:
         while msg := input("\nyou> ").strip():
             asked.append(msg)
-            pending = turn(desk, log, actor, msg, common.cache_key(actor, asked), pending)
+            turn(desk, actor, msg, common.cache_key(actor, asked))
     except EOFError:
         pass
     finally:
@@ -120,10 +131,12 @@ def main():
             sm.close()  # flush buffered events before exit
 
 
-def turn(desk, log, actor, msg, key, pending):
+def turn(desk, actor, msg, key):
+    log = desk.turn_log
     log.reset()
     t0 = time.perf_counter()
-    if not pending and (hit := common.cache_get(key)):
+    cache_on = os.environ.get("ANSWER_CACHE", "on") != "off"  # evals turn it off: a cached turn has no spans
+    if cache_on and not desk.pending_writes and (hit := common.cache_get(key)):
         # ponytail: a cached turn never reaches the model, so it is neither traced nor persisted to Memory.
         desk.messages += [
             {"role": "user", "content": [{"text": msg}]},
@@ -132,17 +145,17 @@ def turn(desk, log, actor, msg, key, pending):
         until = dt.datetime.fromtimestamp(hit["expires"], dt.timezone.utc).strftime("%H:%M")
         print(hit["answer"])
         print(f"\n⏱ {time.perf_counter() - t0:.2f}s (cached answer, valid until {until} UTC)")
-        return []
+        return
     # Strands keeps cumulative metrics on the agent; the difference over this turn is the per step timing.
     m = desk.event_loop_metrics
     before = {n: t.total_time for n, t in m.tool_metrics.items()}, m.accumulated_metrics["latencyMs"]
-    result, pending = ask(desk, msg, pending)  # default callback handler streams the reply to stdout
-    for i in pending:
+    result = ask(desk, msg)  # default callback handler streams the reply to stdout
+    for i in desk.pending_writes:
         print(f"\n{i.reason}")  # the quote: the caller's next message answers it
     secs = time.perf_counter() - t0
     if log.wrote:
         common.cache_drop(actor)
-    elif not log.touched_write and not pending:
+    elif cache_on and not log.touched_write and not desk.pending_writes:
         expires = min(log.expires or float("inf"), time.time() + common.CACHE_TTL)
         if expires > time.time():
             common.cache_put(key, str(result), expires)
@@ -150,7 +163,6 @@ def turn(desk, log, actor, msg, key, pending):
     steps["desk model"] = (m.accumulated_metrics["latencyMs"] - before[1]) / 1000
     shown = " · ".join(f"{n} {s:.1f}s" for n, s in sorted(steps.items(), key=lambda kv: -kv[1]) if s > 0)
     print(f"\n\n⏱ {secs:.1f}s total | {shown}")
-    return pending
 
 
 if __name__ == "__main__":

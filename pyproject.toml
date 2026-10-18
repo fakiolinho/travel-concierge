@@ -1,7 +1,7 @@
 [project]
 name = "travel-concierge"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"  # torch (Strands Decider, evals group) has no 3.15 wheels yet
 dependencies = [
   "strands-agents[otel]",
   "openinference-instrumentation-strands-agents",
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-evals = ["strands-decider==0.1.0"]
+evals = ["strands-decider==0.1.0", "strands-agents-evals==1.6.0", "arize-phoenix-client==3.5.0"]
 dev = ["ruff"]
 
 [tool.ruff]
