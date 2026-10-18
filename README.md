@@ -351,6 +351,27 @@ jq -c 'select(.attributes["session.id"]=="desk-<id>") | [.start_time, .name, .pa
 
 On AgentCore Runtime the same spans go to AgentCore Observability (CloudWatch) instead of a file.
 
+### PCI and PII in traces
+
+The deployed desk masks card data and personal data in every span before it leaves the process
+(`agents/redact.py`, switched on by `TRACE_PII_MASK=on` in the runtime `envVars`). Locally it is off, so
+`logs/` and Phoenix keep the full text for debugging; set `TRACE_PII_MASK=on` to try it.
+
+| Masked | As |
+|---|---|
+| Card numbers (13 to 19 digits, Luhn valid), CVV/CVC, card expiry | `[CARD]`, `[CVV]`, `[EXPIRY]` |
+| Passport numbers (EN, DE, FR, EL labels), emails, phone numbers, dates of birth | `[PASSPORT]`, `[EMAIL]`, `[PHONE]`, `[DOB]` |
+| Duffel passenger fields (`given_name`, `family_name`, `born_on`, `email`, `phone_number`, `passengers`) | `[PII]`, `[NAME]` |
+| The traveler's passenger names anywhere (answers, recalled Memory), learned when the bookings record loads | `[NAME]` |
+
+Booking references, order ids, prices, dates, preferences and traveler ids (`cust_...`) stay, so traces and AgentCore
+online evaluation still work. It is a span processor placed ahead of the Runtime's exporter; if it cannot be placed
+the desk does not start. Strands' own switch (`OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_unredacted_attributes=`) was not
+used: it replaces whole messages with `[REDACTED]` (online evaluation would see nothing) and skips the Memory search
+events. Limit: a name or address the caller types that no tool result or booking holds is not caught; the upgrade is
+Amazon Comprehend `DetectPiiEntities` in the exporter. Memory itself (product data) keeps conversations; card and
+passport numbers never reach it, because the guardrail blocks those messages and Strands redacts them from history.
+
 ### Reviewing traces in a UI
 
 The spans are standard OpenTelemetry with the GenAI conventions (`gen_ai.*`), emitted by Strands itself. To browse
@@ -733,8 +754,17 @@ Shortcuts are marked `# ponytail:` in the code, each naming its limit and upgrad
   reach only a turn's first model call, so answers written after a tool call ignored it. Memory grounding
   25/30 → 29/30.
 - Desk prompt: uses recalled preferences in searches and bookings and names the one used; never changes the passenger
-  count from a preference; mentions an open issue when the question touches it.
+  count from a preference; brings up an open issue only when asked about it or its booking; states no airline
+  practice that is not in the policy rules or a tool result; at most 4 lines.
 - Guardrail version 2: the passport rule needs digits (see [Deploy](#deploy-agentcore)).
+- Production traces mask PCI and PII (`agents/redact.py`, `TRACE_PII_MASK=on` on the Runtime); see
+  [PCI and PII in traces](#pci-and-pii-in-traces). Local traces are unchanged.
+- Weather beyond the forecast horizon (more than 15 days out) is answered at once: the desk answers without a tool
+  when it knows the date, and a Strands hook (`disruption.ForecastHorizon`) answers any such `disruption` call
+  without starting the agent. 20s → 2.8s.
+- Recalled Memory skips summary topics about guardrail blocked turns (`traveler_profile.without_blocked`): the
+  guardrail screens that block with the caller's message, so "visa/medical" in an old summary blocked "any news on
+  the problem I reported?".
 - Eval sessions (`eval-...`) are no longer saved to Memory (`travel_desk.memory_session`).
 - `scripts/seed_memory_sessions.py --clean [--apply]`: one record per persona fact, and summaries that name another
   traveler are dropped. Used once: 160 duplicates and test leftovers, then 6 more (two of them Eleni summaries naming

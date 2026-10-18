@@ -32,6 +32,7 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 
 ## Hard rules
 - Agents never see raw API keys. Duffel token lives in Secrets Manager; Lambdas read it.
+- Production traces carry no PCI or PII: `agents/redact.py` masks them before export (`TRACE_PII_MASK=on` on the Runtime). Add a pattern + assert there when a new sensitive field appears.
 - No write tool (`book_offer`, `change_order`, `cancel_order`, `add_bag`) without an explicit confirmation turn in the same session: enforced by a Strands interrupt (`common.WriteGate`), the caller's next message is the answer.
 - `actor_id` and `guest_verified` are filled from the verified session in code (`common.SessionContext`), never exposed to or supplied by a model.
 - Every "you usually..." / historical claim must be backed by the bookings record or the Memory recalled for this turn.

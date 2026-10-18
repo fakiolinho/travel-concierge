@@ -54,6 +54,7 @@ def model(role):
 
 
 LOG_DIR = ROOT / "logs"
+PII_MASK = os.environ.get("TRACE_PII_MASK", "off") == "on"  # agents/redact.py; on for the deployed desk
 
 
 def setup_tracing(native_processors=()):
@@ -65,8 +66,8 @@ def setup_tracing(native_processors=()):
     events). The evals need that shape: Strands Evals' session mapper and AgentCore's ADOT converter read it."""
     from strands.telemetry import StrandsTelemetry
 
-    # ponytail: local file with unredacted conversation text. Upgrade: AgentCore Observability (CloudWatch) in
-    # Runtime via an OTLP exporter, PII redaction via Guardrails (step 4).
+    # ponytail: local file with unredacted conversation text; the deployed desk masks PCI and PII (redact.py).
+    # Upgrade: mask locally too if real traveler data is ever used outside the Runtime.
     from openinference.instrumentation.strands_agents import StrandsAgentsToOpenInferenceProcessor
 
     LOG_DIR.mkdir(exist_ok=True)
@@ -75,6 +76,10 @@ def setup_tracing(native_processors=()):
     os.environ.setdefault("OTEL_SERVICE_NAME", "travel-concierge")
     os.environ.setdefault("OTEL_RESOURCE_ATTRIBUTES", "openinference.project.name=travel-concierge")
     telemetry = StrandsTelemetry()
+    if PII_MASK:  # first: every processor and exporter below sees masked spans
+        import redact
+
+        telemetry.tracer_provider.add_span_processor(redact.PiiMaskProcessor())
     for p in native_processors:
         telemetry.tracer_provider.add_span_processor(p)
     # Arize's processor copies Strands' gen_ai message events into OpenInference attributes (input/output

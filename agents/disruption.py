@@ -8,14 +8,17 @@ The report comes back to the desk as Strands structured output (JSON). It never 
 goes back through the desk's quote and confirmation with the writing Flight Ops agent.
 """
 
-import datetime as dt
+import datetime as dt, json, re
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from strands.hooks import BeforeToolCallEvent, HookProvider
 
 import common, policy as pol
 
 INTEL_TOOLS = ["airport_weather", "airport_forecast", "destination_forecast", "public_holidays"]
+HOLIDAYS = re.compile(r"(?i)holiday|busy|feiertag|férié|αργί|γιορτ")
+FORECAST_DAYS = 15  # the furthest any source reaches: Open-Meteo, today + 15 (tools/trip_intel.py FORECAST_DAYS = 16)
 
 
 class RebookOption(BaseModel):
@@ -98,9 +101,60 @@ def build(state):
     )
 
 
+class ForecastHorizon(HookProvider):
+    """On the desk: a disruption call for a departure beyond the forecast horizon is answered at once, without the
+    Disruption agent (its model calls and tool lookups took ~10s to conclude "no forecast yet"). The departure comes
+    from a date in the request, or from get_order for an order id in it. Anything unclear goes to the agent."""
+
+    def register_hooks(self, registry, **_):
+        registry.add_callback(BeforeToolCallEvent, self._before)
+
+    def _before(self, event):
+        if event.tool_use["name"] != "disruption":
+            return
+        request = json.dumps(event.tool_use.get("input", ""))
+        if HOLIDAYS.search(request):  # holidays and busy days need no forecast: the agent answers those
+            return
+        if msg := beyond_horizon(departure(request, event.agent.state.get("actor_id")), dt.date.today()):
+            event.cancel_tool = msg
+
+
+def departure(request, actor_id):
+    """The departure date named in a disruption request: the first YYYY-MM-DD, else the order's first departure."""
+    if m := re.search(r"\b(20\d\d-\d\d-\d\d)", request):
+        return dt.date.fromisoformat(m[1])
+    if (m := re.search(r"\bord_[0-9A-Za-z]+", request)) and actor_id:
+        o = common.gateway_call("desk", "get_order", {"order_id": m[0], "actor_id": actor_id})
+        try:
+            return dt.date.fromisoformat(o["slices"][0]["segments"][0]["departing_at"][:10])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+    return None
+
+
+def beyond_horizon(day, today):
+    """The disruption report for a departure no forecast covers yet, or None when one does (or day is unknown)."""
+    if day is None or (day - today).days <= FORECAST_DAYS:
+        return None
+    opens = day - dt.timedelta(days=FORECAST_DAYS)
+    return json.dumps({
+        "risk": "unknown",
+        "summary": f"No weather forecast exists yet for {day}: forecasts reach {FORECAST_DAYS} days ahead, so the "
+        f"first one for that date comes out on {opens}.",
+        "evidence": [], "compensation": "", "rebooking_options": [],  # nothing to assess yet: keep the answer short
+    })  # fmt: skip
+
+
 if __name__ == "__main__":
     r = DisruptionReport(risk="unknown", summary="s", evidence=["LAS forecast: not available until 2027-01-12"],
                          compensation="quoted rule")  # fmt: skip
     assert r.rebooking_options == [] and r.model_dump(mode="json")["risk"] == "unknown"
     assert set(DisruptionReport.model_json_schema()["properties"]) >= {"risk", "evidence", "rebooking_options"}
+    today = dt.date(2026, 10, 19)
+    assert departure('{"input": "SKG-AMS on 2026-12-05 03:05, weather?"}', None) == dt.date(2026, 12, 5)
+    assert departure('{"input": "weather for my flight"}', "cust_a") is None
+    far = json.loads(beyond_horizon(dt.date(2026, 12, 5), today))
+    assert far["risk"] == "unknown" and "2026-11-20" in far["summary"], far
+    assert beyond_horizon(dt.date(2026, 11, 3), today) is None and beyond_horizon(None, today) is None
+    assert HOLIDAYS.search('{"input": "UK public holidays around 2026-11-09?"}') and not HOLIDAYS.search("weather")
     print("disruption: ok")

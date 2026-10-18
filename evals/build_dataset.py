@@ -46,7 +46,7 @@ B = {
 AIRPORT_NAMES = {"LHR": ["Heathrow"], "CDG": ["Charles de Gaulle"], "JFK": ["Kennedy"], "FCO": ["Fiumicino"],
                  "AMS": ["Schiphol"], "DXB": ["Dubai"], "BCN": ["Barcelona"]}  # fmt: skip
 REFS = {a: [r for r, b in B.items() if b[0] == a] for a in ("cust_marios", "cust_eleni", "cust_nikos")}
-NO_FORECAST = ["no forecast", "not available", "too far", "isn't available", "not yet", "no detailed forecast",
+NO_FORECAST = ["no forecast", "no weather forecast", "not available", "too far", "isn't available", "not yet", "no detailed forecast",
                "can't forecast", "cannot forecast", "too early", "beyond", "can't tell", "cannot tell",
                "check back", "check again"]  # fmt: skip
 # Open-Meteo forecasts reach 15 days ahead. Flights further out than this from AS_OF are expected to get "no forecast

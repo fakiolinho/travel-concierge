@@ -6,7 +6,7 @@
   AgentCore memory stores (`memory`), scoped to this traveler's namespaces, and folded into that turn's message.
 """
 
-import json
+import json, re
 from collections import Counter, defaultdict
 from decimal import Decimal
 
@@ -54,6 +54,10 @@ def load(actor_id):
     desk (it also warms the desk's Gateway session). No fixture here, so the same code runs in AgentCore Runtime."""
     orders = common.gateway_call("desk", "list_orders", {"actor_id": actor_id})
     error = orders.get("error") if isinstance(orders, dict) else None
+    if common.PII_MASK and not error:  # the traveler's names are masked in traces from the first span on
+        import redact
+
+        redact.learn(n for o in orders for n in o.get("passengers", []))
     record = summarize(actor_id, [] if error else [trip(o) for o in orders if o["status"] != "cancelled"])
     if error:  # say so in the record rather than fail the whole call
         record["bookings_error"] = error
@@ -101,9 +105,24 @@ def caller_message(ctx):
 
 
 def render_memory(ctx):
-    """The memory block the desk sees: one line per record, preference records reduced to their sentence."""
-    lines = compact_preferences([" ".join(e.content.split())[:600] for e in ctx.entries])
+    """The memory block the desk sees: one line per record, preference records reduced to their sentence, without
+    summary topics about turns the guardrail blocked."""
+    lines = compact_preferences([without_blocked(" ".join(e.content.split()))[:600] for e in ctx.entries])
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""  # Strands skips the injection
     return "<traveler_memory>\n" + "\n".join(f"- {line}" for line in lines) + "\n</traveler_memory>"
+
+
+BLOCKED_TOPIC = re.compile(r"<topic\b[^>]*>(?:(?!</topic>).)*?(?:redact|passport numbers|visas? or medical|visa/medical)"
+                           r"(?:(?!</topic>).)*</topic>", re.I | re.S)  # fmt: skip
+
+
+def without_blocked(text):
+    """A summary without its topics about guardrail blocked turns. They hold nothing to recall, and the guardrail
+    screens this block as part of the caller's message: "visa/medical related questions" in a summary got a
+    traveler's next harmless question ("any news on the problem I reported?") blocked as a visa topic."""
+    return BLOCKED_TOPIC.sub("", text).strip()
 
 
 def trip(order):
@@ -159,6 +178,10 @@ if __name__ == "__main__":
 
     block = render_memory(NS(entries=[NS(content='{"preference": "Aisle seat"}'), NS(content="Coeliac:  gluten free")]))
     assert block == "<traveler_memory>\n- Aisle seat\n- Coeliac: gluten free\n</traveler_memory>", block
+    summary = ('<topic name="Meal"> Halal meal requested. </topic> <topic name="Redacted"> The user sent a redacted '
+               "message, likely card or passport numbers, or visa/medical questions. </topic>")  # fmt: skip
+    assert without_blocked(summary) == '<topic name="Meal"> Halal meal requested. </topic>', without_blocked(summary)
+    assert render_memory(NS(entries=[NS(content=summary[summary.index('<topic name="Red') :])])) == ("")
     assert [n.get("namespace") or n["namespace_path"] for n in namespaces("cust_a")] == [
         "/users/cust_a/preferences/", "/users/cust_a/facts/", "/summaries/cust_a/"]  # fmt: skip
     msgs = [{"role": "user", "content": [{"text": "My meal?"}]}, {"role": "assistant", "content": [{"text": "x"}]},

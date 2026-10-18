@@ -11,6 +11,15 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 import travel_desk
 
 app = BedrockAgentCoreApp()
+
+if travel_desk.common.PII_MASK:
+    # The Runtime's OpenTelemetry (ADOT) exporter is registered before this module loads; mask ahead of it. Fail
+    # closed: a desk that would ship card numbers to CloudWatch does not start.
+    from opentelemetry import trace
+
+    import redact
+
+    redact.add_first(trace.get_tracer_provider(), redact.PiiMaskProcessor())
 desks = {}  # session id -> (desk agent, actor); pending write interrupts live on desk.pending_writes
 
 ACTOR_HEADER = "x-actor-id"  # allowlisted in agentcore.json (requestHeaderAllowlist)

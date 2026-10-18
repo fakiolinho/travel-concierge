@@ -40,6 +40,10 @@
           "value": "2"
         },
         {
+          "name": "TRACE_PII_MASK",
+          "value": "on"
+        },
+        {
           "name": "GATEWAY_ROLE_DISRUPTION",
           "value": "arn:aws:iam::437987386879:role/TravelConcierge-DisruptionGateway"
         }
