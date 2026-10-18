@@ -189,10 +189,11 @@ export class AgentCoreStack extends Stack {
         ].map(type => ({ type, action: 'BLOCK', inputAction: 'BLOCK', outputAction: 'ANONYMIZE' })),
         regexesConfig: [
           {
-            // Non US passports: "passport" followed by a 6 to 9 character document number.
+            // Non US passports: "passport", then up to 2 letters and 6 to 9 digits. Digits required: the old
+            // [A-Z0-9]{6,9} matched any word ("my passport expires", "passport numbers, or visa/medical").
             name: 'passport_number',
             description: 'Passport number mentioned with the word passport',
-            pattern: '(?i)passport\\D{0,20}[A-Z0-9]{6,9}',
+            pattern: '(?i)passport\\D{0,20}\\b[A-Z]{0,2}\\d{6,9}\\b',
             action: 'BLOCK',
             inputAction: 'BLOCK',
             outputAction: 'ANONYMIZE',
@@ -220,7 +221,7 @@ export class AgentCoreStack extends Stack {
     });
     const guardrailVersion = new bedrock.CfnGuardrailVersion(this, 'TravelDeskGuardrailVersion', {
       guardrailIdentifier: guardrail.attrGuardrailId,
-      description: 'Pinned for the agents; bump by changing the guardrail and redeploying',
+      description: 'Pinned for the agents (v2: passport regex needs digits); edit this to publish a new version',
     });
     // Deployed desk runtime: apply the guardrail, and read/write the traveler Memory (records + conversation events).
     for (const env of this.application.environments.values()) {

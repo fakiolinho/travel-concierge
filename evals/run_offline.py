@@ -555,13 +555,19 @@ def main():
     ap.add_argument("--cloudwatch", action="store_true", help="eval metrics + Strands Evals results to CloudWatch")
     ap.add_argument("--workers", type=int, default=12, help="parallel judge workers (cases still run one at a time)")
     ap.add_argument("--from-results", help="log a saved results file to Phoenix (and CloudWatch) without rerunning")
+    ap.add_argument(
+        "--phoenix-judges", action="store_true", help="register the two custom judges as Phoenix evaluators"
+    )
     args = ap.parse_args()
     if args.from_results:
         return relog(args)
+    if args.phoenix_judges:
+        return register_phoenix_judges()
 
-    # service.name: Strands Evals' CloudWatch logger requires it; harmless for Phoenix.
+    # Own Phoenix project: Strands Evals wraps each case in execute_case/evaluator spans with no input/output, which
+    # would bury the desk's traces. service.name: Strands Evals' CloudWatch logger requires it.
     os.environ.setdefault(
-        "OTEL_RESOURCE_ATTRIBUTES", "openinference.project.name=travel-concierge,service.name=travel-concierge"
+        "OTEL_RESOURCE_ATTRIBUTES", "openinference.project.name=travel-concierge-evals,service.name=travel-concierge"
     )
     if args.cloudwatch:  # Strands Evals writes every evaluator result to the AgentCore evaluation results log group
         os.environ.update(AGENT_OBSERVABILITY_ENABLED="true", EVALUATION_RESULTS_LOG_GROUP="travel-concierge")
@@ -1090,7 +1096,7 @@ def cloudwatch_metrics(args, cases, runs, results):
 
 def phoenix_log(cases, runs, results, label, sha, dataset):
     """Dataset (one example per case, reused by name), one experiment per run, CODE evaluations per check, plus the
-    same verdicts as span annotations on each turn's desk span in the travel-concierge project."""
+    same verdicts as span annotations on each turn's desk span in the travel-concierge-evals project."""
     from phoenix.client import Client
 
     px = Client(base_url=PHOENIX_URL)
@@ -1133,6 +1139,7 @@ def phoenix_log(cases, runs, results, label, sha, dataset):
             output={
                 "answers": [t["answer"] for t in run["turns"]],
                 "tools": [[x["name"] for x in t["tools"]] for t in run["turns"]],
+                "context": judge_context(c, run),  # what the Phoenix copies of the custom judges read
             },
             start_time=utc(run["started"]),
             end_time=utc(run["ended"]),
@@ -1163,6 +1170,80 @@ def phoenix_log(cases, runs, results, label, sha, dataset):
                     explanation=why,
                 )
     return f"Phoenix: dataset '{dataset}', experiment '{label}-{sha}' -> {px.experiments.get_experiment_url(dataset_id=ds.id, experiment_id=exp['id'])}"
+
+
+def register_phoenix_judges():
+    """The two custom judges as Phoenix LLM evaluators on every eval dataset (Evaluators page), so they can be run from
+    the Phoenix UI: Playground experiments over a dataset, and the evaluator preview. They read the run output's
+    `context` (judge_context), logged by phoenix_log. Phoenix calls Bedrock with the AWS credentials compose.yaml
+    mounts. Rerun after editing a rubric: existing evaluators are updated in place.
+    ponytail: Phoenix's GraphQL API (what its UI uses; phoenix-client has no evaluator API in 3.5). Upgrade: the
+    client API once it has one."""
+
+    def gql(query, **variables):
+        body = json.dumps({"query": query, "variables": variables}).encode()
+        req = urllib.request.Request(f"{PHOENIX_URL}/graphql", body, {"content-type": "application/json"})
+        r = json.load(urllib.request.urlopen(req))
+        assert not r.get("errors"), r["errors"]
+        return r["data"]
+
+    from phoenix.client import Client
+
+    px = Client(base_url=PHOENIX_URL)
+    judges = {"historical_claims": HISTORICAL_RUBRIC, "policy_quoted": POLICY_RUBRIC}
+    for dataset in sorted({d for _, d in SUITES.values()}):
+        try:
+            ds_id = px.datasets.get_dataset(dataset=dataset).id
+        except Exception:
+            print(f"{dataset}: no such dataset yet (run that suite once), skipped")
+            continue
+        have = gql("query($id:ID!){node(id:$id){... on Dataset{datasetEvaluators{edges{node{id name}}}}}}", id=ds_id)
+        have = {e["node"]["name"]: e["node"]["id"] for e in have["node"]["datasetEvaluators"]["edges"]}
+        for name, rubric in judges.items():
+            fields = phoenix_judge(ds_id, name, rubric)
+            if name in have:
+                gql("mutation($i:UpdateDatasetLLMEvaluatorInput!){updateDatasetLlmEvaluator(input:$i){__typename}}",
+                    i={**fields, "datasetEvaluatorId": have[name]})  # fmt: skip
+            else:
+                gql("mutation($i:CreateDatasetLLMEvaluatorInput!){createDatasetLlmEvaluator(input:$i){__typename}}",
+                    i=fields)  # fmt: skip
+            print(f"{dataset}: {name} {'updated' if name in have else 'created'}")
+    print(f"Phoenix: {PHOENIX_URL}/evaluators")
+
+
+def phoenix_judge(dataset_id, name, rubric):
+    """One custom judge as a Phoenix dataset LLM evaluator: the rubric, the run's judge context, and a forced
+    pass/fail tool call named after the output config (Phoenix matches the two by name)."""
+    verdict = {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "enum": ["pass", "fail"], "description": name},  # Phoenix: must be the name
+            "explanation": {"type": "string", "description": "why, per the rubric"},
+        },
+        "required": ["label", "explanation"],
+    }
+    text = lambda t: [{"text": {"text": t}}]
+    desc = f"Custom judge from evals/run_offline.py ({name}); reads output.context"  # Phoenix: tool description too
+    return {
+        "datasetId": dataset_id,
+        "name": name,
+        "description": desc,
+        "promptVersion": {
+            "templateFormat": "MUSTACHE",
+            "template": {"messages": [
+                {"role": "SYSTEM", "content": text(rubric.replace("Score 1.0", "Label pass").replace("Score 0.0", "Label fail"))},
+                {"role": "USER", "content": text("{{context}}")},
+            ]},
+            "invocationParameters": {"aws": {"maxTokens": 1024}},  # Claude 5.x rejects temperature
+            "tools": {"tools": [{"function": {"name": name, "description": desc, "parameters": verdict}}],
+                      "toolChoice": {"functionName": name}},
+            "modelProvider": "AWS",
+            "modelName": JUDGE_MODEL,
+        },
+        "outputConfigs": [{"categorical": {"name": name, "optimizationDirection": "MAXIMIZE",
+                                           "values": [{"label": "pass", "score": 1.0}, {"label": "fail", "score": 0.0}]}}],
+        "inputMapping": {"pathMapping": {"context": "$.output.context"}, "literalMapping": {}},
+    }  # fmt: skip
 
 
 REFS = {}

@@ -37,7 +37,7 @@
         },
         {
           "name": "GUARDRAIL_VERSION",
-          "value": "1"
+          "value": "2"
         },
         {
           "name": "GATEWAY_ROLE_DISRUPTION",

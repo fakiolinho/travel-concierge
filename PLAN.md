@@ -44,7 +44,8 @@ Resource: `TravelConciergeMemory`
 - Summary         → `/summaries/{actorId}/{sessionId}/`
 Strands: `AgentCoreMemorySessionManager(AgentCoreMemoryConfig(memory_id, session_id, actor_id))` on the desk, flush on exit.
 Recall: Strands `MemoryManager` over recall only `AgentCoreMemoryStore`s (the traveler's preferences, facts and
-summaries subtree), injected into each caller turn; every historical claim must trace to the record or that recall.
+summaries subtree), injected into every model call of a turn (trigger `everyTurn`, query = the caller's message);
+every historical claim must trace to the record or that recall. Eval sessions (`eval-...`) are never saved.
 Messages are batched (flush every 30s and on close) so persistence adds no time inside a turn.
 Seed with 10 to 15 scripted past sessions per traveler so extractors have real material.
 Structured history (prices, routes, dates) comes from Duffel orders, never from LLM memory.

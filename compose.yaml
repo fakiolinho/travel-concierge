@@ -9,8 +9,12 @@ services:
       - "6006:6006"
     environment:
       PHOENIX_WORKING_DIR: /mnt/data
+      AWS_REGION: us-east-1
     volumes:
       - phoenix-data:/mnt/data
+      # Bedrock for the judges registered by `evals/run_offline.py --phoenix-judges`: Phoenix uses the default AWS
+      # credential chain, read only. ponytail: your own credentials. Upgrade: a role limited to bedrock:InvokeModel.
+      - ${HOME}/.aws:/root/.aws:ro
 
 volumes:
   phoenix-data:

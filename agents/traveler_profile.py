@@ -85,8 +85,19 @@ def memory(actor_id, session_id):
         )
         for ns in namespaces(actor_id)
     ]
-    injection = {"max_entries": 12, "format": render_memory}  # default trigger: once per caller turn
+    # Every model call, not Strands' default "userTurn": injection is per call and never kept in history, so with the
+    # default a turn that calls a tool first answers from the tool result without the traveler's Memory.
+    # ponytail: one Memory search per model call (~0.3s each after a tool). Upgrade: cache the block per caller turn.
+    injection = {"max_entries": 12, "format": render_memory, "trigger": "everyTurn", "query": caller_message}
     return MemoryManager(stores=stores, search_tool_config=False, injection=injection)
+
+
+def caller_message(ctx):
+    """The search query on every model call of a turn: the caller's latest words, not the desk's last step."""
+    for m in reversed(ctx.messages):
+        if m["role"] == "user" and not any("toolResult" in b for b in m["content"]):
+            return "\n".join(b["text"] for b in m["content"] if "text" in b).strip() or None
+    return None
 
 
 def render_memory(ctx):
@@ -150,6 +161,9 @@ if __name__ == "__main__":
     assert block == "<traveler_memory>\n- Aisle seat\n- Coeliac: gluten free\n</traveler_memory>", block
     assert [n.get("namespace") or n["namespace_path"] for n in namespaces("cust_a")] == [
         "/users/cust_a/preferences/", "/users/cust_a/facts/", "/summaries/cust_a/"]  # fmt: skip
+    msgs = [{"role": "user", "content": [{"text": "My meal?"}]}, {"role": "assistant", "content": [{"text": "x"}]},
+            {"role": "user", "content": [{"toolResult": {"toolUseId": "t", "content": []}}]}]  # fmt: skip
+    assert caller_message(NS(messages=msgs)) == "My meal?" and caller_message(NS(messages=[])) is None
     o = {"order_id": "ord_1", "booking_reference": "R1", "status": "confirmed", "cabin": "economy", "total": "9.00",
          "currency": "EUR", "slices": [{"origin": "ATH", "destination": "LHR", "segments": [{"carrier": "ZZ Air"}]}]}  # fmt: skip
     assert summarize("cust_a", [trip(o)])["past_routes"][0]["route"] == "ATH-LHR"

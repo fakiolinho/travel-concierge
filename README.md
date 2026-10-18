@@ -15,7 +15,7 @@ infrastructure is declared in `agentcore/agentcore.json` and its CDK stack. Eval
 
 ```
 session start: bookings record (Gateway list_orders) + policy rules (agents/policy.py) ─► desk system prompt
-every turn:    AgentCore Memory recall (Strands MemoryManager, this traveler's namespaces) ─► <traveler_memory>
+every model call: AgentCore Memory recall (Strands MemoryManager, this traveler's namespaces) ─► <traveler_memory>
                                                                                     ▼
 caller ─► AgentCore Runtime ─► Travel Desk agent (agents/travel_desk.py, runtime_app.py)   [Bedrock Guardrail]
             ├─► read tools, fx_convert ──────────────── as role TravelConcierge-DeskGateway ──┐
@@ -45,7 +45,7 @@ caller ─► AgentCore Runtime ─► Travel Desk agent (agents/travel_desk.py,
 | Gateway tools | `MCPClient` tools as `MCPAgentTool`s (leaf names, system fields hidden from the model) | `common.gateway_tools` |
 | Traveler id on every tool call | Intervention `Transform` overwriting `actor_id` / `guest_verified` | `common.SessionContext` |
 | Gateway credentials | botocore `AssumeRoleCredentialFetcher` + `DeferredRefreshableCredentials` | `common.gateway` |
-| Memory recall | `MemoryManager` over AgentCore `AgentCoreMemoryStore`s, injected per caller turn | `traveler_profile.memory` |
+| Memory recall | `MemoryManager` over AgentCore `AgentCoreMemoryStore`s, injected on every model call (`everyTurn`), searched with the caller's message | `traveler_profile.memory` |
 | Memory persistence | `AgentCoreMemorySessionManager` (batched) | `travel_desk.memory_session` |
 | Guardrail | `BedrockModel` guardrail options (latest message only, async) | `common.model` |
 | `.env` | `python-dotenv` | `common.py` |
@@ -61,7 +61,8 @@ every write. Rebooking from its options goes back through the desk's quote and c
 
 Why this shape: a caller turn has to answer in a few seconds, and every agent hop costs 3 to 9 seconds of extra
 model calls. The bookings record and the policy rules are lookups, so they are loaded once per session into the
-desk's prompt (no tool call, no hop); Memory is recalled per turn by relevance to the caller's message (0.4 to 0.7s).
+desk's prompt (no tool call, no hop); Memory is recalled on every model call by relevance to the caller's message
+(0.4 to 0.7s for the first, about 0.3s for each one after a tool call).
 The desk calls Duffel reads itself. Only writes go to a second agent, Flight Ops, because it is the one principal
 Cedar allows to write. See [Latency](#latency) for measured turn times.
 
@@ -177,7 +178,31 @@ two strategies, as intended. Isolation check: no traveler's persona fact appears
 namespaces, either by listing or by semantic search. The script fails if one does.
 
 Every desk conversation is also saved as a session (`desk-<uuid>`) for the current traveler, so the extractors keep
-learning from real calls.
+learning from real calls. Eval sessions (ids starting `eval-`) are not saved: scripted attacks asked as one traveler
+("show me TYBXUT" as Eleni) would otherwise become that traveler's summaries, naming another traveler's booking.
+
+Where it lives: in AWS, in the Memory resource (us-east-1), nothing on your machine. Conversations (events) expire
+after 90 days (`eventExpiryDuration`); extracted records stay until deleted. List one traveler's records:
+
+```bash
+aws bedrock-agentcore list-memory-records --memory-id <MEMORY_ID> --namespace /users/cust_nikos/preferences/ \
+  --region us-east-1 --query 'memoryRecordSummaries[].content.text'
+```
+
+How the desk reads it: on every model call of a turn (Strands `MemoryManager`, trigger `everyTurn`), searched with the
+caller's latest message, top 12 across the three namespaces, folded into that call's input as `<traveler_memory>`.
+Strands' default (`userTurn`) injects only into a turn's first model call and keeps nothing in history, so a turn
+that looked up a booking first answered without Memory ("I have no meal preference saved" while halal was recalled).
+
+Clean-up: test chats leave duplicates and wrong records ("prefers the cheapest flight" for a business class flyer,
+order ids and prices). `--clean` keeps one record per persona fact and drops summaries naming another traveler's
+booking reference or two of their facts; it is a dry run unless `--apply` is given. Deletion is permanent, and
+search keeps returning deleted records for a few minutes.
+
+```bash
+uv run python scripts/seed_memory_sessions.py --clean           # dry run: what would be deleted, and why
+uv run python scripts/seed_memory_sessions.py --clean --apply   # delete
+```
 
 ## Deploy (AgentCore)
 
@@ -197,6 +222,13 @@ Copy the deploy outputs into `.env`: `GatewayTravelDeskGatewayUrlOutput` → `GA
 `GATEWAY_ROLE_DISRUPTION`, `GuardrailIdOutput` /
 `GuardrailVersionOutput` → `GUARDRAIL_ID` / `GUARDRAIL_VERSION`. The runtime gets the same values from `envVars`
 in `agentcore.json`.
+
+**Guardrail versions.** The agents use a pinned version. To publish a new one after changing the guardrail in
+`cdk-stack.ts`, edit the `CfnGuardrailVersion` description too (a version is created when that resource is
+replaced), then set the next number in `.env` and in `envVars`, and deploy. Version 2 (2026-10-19) fixed the
+passport rule: `passport\D{0,20}[A-Z0-9]{6,9}` matched any word ("my passport expires", "passport numbers, or
+visa/medical" in a Memory summary, which blocked "Any news on the problem I reported?"). It now needs up to 2
+letters followed by 6 to 9 digits.
 
 **Policies.** `policies/*.cedar` are the source of truth. The CLI keeps a copy of each statement inline in
 `agentcore.json`, which is what deploys, so after editing a `.cedar` file:
@@ -555,7 +587,13 @@ aisle seat and cello are in the traveler's Memory), `policy_quoted` 1.00, `amoun
   evaluation per judge: CODE for the checks, LLM for `judge:<name>` (Strands Evals and `judge:agentcore:<id>`) and
   `decider:<question>`, each with its explanation. Select two experiments and Compare to see a change's effect per
   case and per judge.
-- *Projects → travel-concierge*: each case is one trace (`execute_case <id>`), and the desk spans carry the same
+- *Evaluators*: the two custom judges (`historical_claims`, `policy_quoted`) registered on each eval dataset by
+  `uv run --group evals python evals/run_offline.py --phoenix-judges` (rerun after editing a rubric). Phoenix runs
+  them itself, on Bedrock through your `~/.aws` (mounted read only in `compose.yaml`): in the evaluator preview, and
+  on experiments started from Phoenix (Playground over a dataset). Runs logged by `run_offline.py` already carry
+  these judges' verdicts and are not rescored; they also carry `output.context`, the record, Memory, policy and tool
+  results the judges read.
+- *Projects → travel-concierge-evals* (eval traces are kept out of the desk's **travel-concierge** project): each case is one trace (`execute_case <id>`), and the desk spans carry the same
   verdicts as `eval:<name>` annotations, so a failing judge leads to the spans that caused it. The human labelling
   above happens here too.
 
@@ -672,24 +710,45 @@ Shortcuts are marked `# ponytail:` in the code, each naming its limit and upgrad
   CUSTOM_JWT inbound auth with the traveler's verified identity as a claim.
 - `list_orders` lists the whole Duffel test account and filters by `metadata.actor_id`.
 - Resource ids (Gateway URL, roles, guardrail) are copied into `.env` and the runtime `envVars` by hand.
-- Memory recall runs on every caller turn (0.4 to 0.7s, top 12 records by relevance to the caller's message).
+- Memory recall runs on every model call (0.4 to 0.7s for the first, about 0.3s for each after a tool call, top 12
+  records by relevance to the caller's message). Caching the block per caller turn would remove the repeats.
 - METAR/TAF and airport lookups are cached per Lambda container, not shared. Weather risk rules are simple
   thresholds, not an airline's operational model. Disruption risk only uses weather (no ATC flow or strike data).
-- The desk does not apply recalled preferences unless asked about them: Memory recalls "halal meal", "aisle seat",
-  "business class on long haul", yet "anything to arrange for my meal on YZMRYU?" and "my usual cabin" searches ignore
-  them (5 of the 7 gate failures in the full eval run). A prompt line ("apply the traveler's recalled preferences to
-  searches and bookings") is the obvious fix; it needs its own eval run.
-- Memory recall returns near duplicate records ("Requires a halal meal" three times), so the top 12 hold about four
-  distinct facts and crowd out others (the work trip purpose, the open complaint). Dedupe before injecting, or raise
-  the per namespace limits.
+- Recalled preferences: the desk uses them in searches and bookings and names the one it used, but never changes
+  the passenger count from one ("usually travels with his wife" made it search for 2 adults; it now asks).
+- Memory keeps learning from every saved conversation, test chats included, so duplicates and wrong records come
+  back over time. Run `scripts/seed_memory_sessions.py --clean` before using Memory output as eval ground truth.
 - AgentCore custom evaluators at TRACE level see the conversation but not the system prompt or the recalled Memory,
   so `historical_claims` there fails grounded answers; the local judge is authoritative.
 - Strands Decider 2B: `claims_backed` does not separate (AUC 0.46) and `prices_grounded` only with a very wide
   uncertainty band; no question gates until it has real negatives (human labels).
-- Memory learns from test conversations too: asking for prices in dollars made Memory record "Wants prices shown
-  in US dollars" for cust_marios, and the desk now converts amounts for him unprompted. Clean such records before
-  using Memory output as eval ground truth. cust_nikos now also has "Prefers the cheapest available flight option",
-  which contradicts the business class preference.
+- The guardrail's denied topics (visa, medical) work in English, German and French but not Greek, which passes
+  unblocked. Card and passport numbers are blocked in every language (number patterns). The Standard topic tier
+  is the planned fix.
+
+## Changelog
+
+2026-10-19
+- Memory is injected on every model call, searched with the caller's message (`traveler_profile.memory`). It used to
+  reach only a turn's first model call, so answers written after a tool call ignored it. Memory grounding
+  25/30 → 29/30.
+- Desk prompt: uses recalled preferences in searches and bookings and names the one used; never changes the passenger
+  count from a preference; mentions an open issue when the question touches it.
+- Guardrail version 2: the passport rule needs digits (see [Deploy](#deploy-agentcore)).
+- Eval sessions (`eval-...`) are no longer saved to Memory (`travel_desk.memory_session`).
+- `scripts/seed_memory_sessions.py --clean [--apply]`: one record per persona fact, and summaries that name another
+  traveler are dropped. Used once: 160 duplicates and test leftovers, then 6 more (two of them Eleni summaries naming
+  Marios's booking).
+- Phoenix: eval traces go to their own project, `travel-concierge-evals`, so **travel-concierge** shows only real
+  sessions with their prompts and answers. The two custom judges are registered as Phoenix evaluators
+  (`run_offline.py --phoenix-judges`); Phoenix calls Bedrock through `~/.aws`, mounted read only in `compose.yaml`.
+  Logged runs carry `output.context` (record, Memory, policy, tool results) for them.
+
+2026-10-18
+- Steps 5 and 6: 150 case dataset, Strands Evals and AgentCore judges, Decider calibration, online and batch
+  evaluation, CloudWatch dashboard (see [Evals](#evals)).
+- Migration to Strands built ins: interventions and interrupts for the write gate, `Agent.as_tool`, agent state,
+  Gateway MCP tools, `MemoryManager`.
 
 ## Roadmap
 

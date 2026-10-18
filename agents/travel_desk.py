@@ -18,6 +18,10 @@ How to work:
 - Flights to a city: search the airport the traveler has used for that city in their record; if none, the main
   airport. Search other airports only if asked. One search per question unless the traveler asks for more.
 - Bookings: get_order or list_orders. Date changes: change_options. Bags: bag_options. Seats: seat_map.
+- Searches, bookings, seats and meals: use the preferences in <traveler_memory> (seat, meal, cabin, departure
+  time, airport) without being asked, and say in a few words which one you used. Never change the number of
+  passengers from a preference; ask. Mention an open issue in <traveler_memory> (claim, complaint, refund) when the
+  caller's question touches it.
 - Weather, disruption risk, public holidays or busy travel days, "should I move my flight", or the weather when
   they land: call disruption with the order id (from the traveler record or a tool result; never a bare booking
   reference), or the route and departure time if you already have them; never answer these from general knowledge.
@@ -43,12 +47,17 @@ Policy rules:
 Traveler record (bookings, loaded at the start of this call):
 {profile}"""
 
+EVAL_SESSION = "eval-"  # session id prefix of eval traffic: never persisted to Memory
+
 
 def memory_session(actor_id, session_id):
     """Persist this conversation to AgentCore Memory so the extractors can learn from it, and keep the session's
     agent state (including a pending write interrupt) across Runtime invocations. Persistence only: recall is done by
     traveler_profile.memory."""
-    if not common.MEMORY_ID:
+    # Eval sessions (evals/run_runtime.py: "eval-rt-...") are not saved: a scripted attack such as "show me TYBXUT"
+    # asked as Eleni would become a summary in Eleni's Memory naming Marios's booking.
+    # ponytail: the caller picks the session id. Upgrade: eval travelers of their own, with JWT inbound auth.
+    if not common.MEMORY_ID or session_id.startswith(EVAL_SESSION):
         return None
     from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
     from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager

@@ -48,6 +48,67 @@ def memory_records(actor, limit=200):
     return out
 
 
+def clean(apply=False):
+    """Keep one record per persona fact in each actor's preference and fact namespaces; drop the rest: repeats (the 12
+    seeded sessions restate every fact, and duplicates crowd the desk's top 12 recall) and records matching no persona
+    fact (left by test chats on the deployed desk, e.g. "prefers cheapest" for a business class flyer). Summaries are
+    kept unless they name another traveler: one of their booking references or persona facts, as left by isolation
+    evals on the deployed desk ("show me TYBXUT" asked as Eleni) before eval sessions stopped being saved.
+    ponytail: persona ground truth decides what is real, fine for the 3 test travelers. Upgrade: eval traffic on its
+    own actors, so Memory of real travelers is never edited by hand."""
+    import boto3
+
+    c = boto3.client("bedrock-agentcore", region_name=common.REGION)
+    refs = {a: [t["booking_reference"] for t in trips] for a, trips in json.loads(common.HISTORY.read_text()).items()}
+    drop = []
+    for actor, facts in PERSONAS.items():
+        for kind in ("preferences", "facts"):
+            covered = set()
+            for x in sorted(listing(c, actor, kind), key=lambda x: x["createdAt"]):  # oldest first: seeds came first
+                text = x["content"]["text"]
+                hit = {f["id"] for f in facts if matches(text, f["match"])}
+                if hit - covered:
+                    covered |= hit
+                    print(f"keep {actor} {kind}: {text[:110]}")
+                else:
+                    drop.append(x["memoryRecordId"])
+                    print(f"{'drop' if hit else 'DROP unmatched'} {actor} {kind}: {text[:110]}")
+        for x in listing(c, actor, "summaries"):
+            if names := foreign(x["content"]["text"], actor, refs):
+                drop.append(x["memoryRecordId"])
+                print(f"DROP {actor} summary naming {names}: {x['content']['text'][:90]}")
+    print(f"{len(drop)} records to delete" + ("" if apply else " (dry run, --clean --apply deletes)"))
+    for i in range(0, len(drop) if apply else 0, 100):
+        r = c.batch_delete_memory_records(
+            memoryId=common.MEMORY_ID, records=[{"memoryRecordId": m} for m in drop[i : i + 100]]
+        )
+        assert not r.get("failedRecords"), r["failedRecords"]
+
+
+def listing(c, actor, kind):
+    """Every record of one actor and strategy (summaries: the whole per session subtree)."""
+    path, key = namespaces(actor)[kind]
+    key = {"namespace": "namespace", "namespace_path": "namespacePath"}[key]
+    recs, token = [], None
+    while True:
+        r = c.list_memory_records(
+            memoryId=common.MEMORY_ID, maxResults=100, **{key: path}, **({"nextToken": token} if token else {})
+        )
+        recs += r.get("memoryRecordSummaries", [])
+        if not (token := r.get("nextToken")):
+            return recs
+
+
+def foreign(text, actor, refs):
+    """Other travelers' booking references, or at least two of one other traveler's persona facts, named in one of
+    `actor`'s records. One fact alone is too loose on summaries ("refund window" is not Eleni's window seat)."""
+    out = [ref for other, rs in refs.items() if other != actor for ref in rs if ref in text]
+    for other, fs in PERSONAS.items():
+        hits = [f["id"] for f in fs if other != actor and matches(text, f["match"])]
+        out += hits if len(hits) >= 2 else []
+    return out
+
+
 def matches(text, groups):
     t = text.lower()
     return all(any(w in t for w in g) for g in groups)
@@ -127,7 +188,14 @@ if __name__ == "__main__":
     assert matches("Prefers an AISLE seat", [["aisle"]]) and not matches("window seat", [["aisle"]])
     assert matches("bag lost on the JFK flight", [["bag", "luggage"], ["new york", "jfk"]])
     assert not matches("bag lost in Paris", [["bag", "luggage"], ["new york", "jfk"]])
+    refs = {"cust_a": ["AAA111"], "cust_b": ["BBB222"]}
+    assert foreign("asked about BBB222, not on the account", "cust_a", refs) == ["BBB222"]
+    assert foreign("asked about AAA111", "cust_a", refs) == []
+    assert foreign("a full refund window", "cust_marios", refs) == []  # one loose fact match is not a leak
+    assert foreign("lost bag claim from New York; morning flights", "cust_eleni", refs) == ["m_time", "m_bag"]
     assert common.MEMORY_ID, "set MEMORY_ID in .env (agentcore status --type memory shows it)"
+    if "--clean" in sys.argv:
+        sys.exit(clean(apply="--apply" in sys.argv))
     client = MemoryClient(region_name="us-east-1")
     if "--measure-only" not in sys.argv:
         seed(client)

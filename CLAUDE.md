@@ -17,7 +17,7 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
   Secret values (the Duffel token) are put by `scripts/prepare_gateway.py`, never in a template.
 
 ## Layout
-- `agents/` desk agent (`travel_desk.py`) with direct Duffel read tools; Flight Ops agent for writes (`flight_ops.py`); bookings record (`traveler_profile.load`, once per session) and policy rules (`policy.py`) in the desk prompt, Memory recalled per turn (`traveler_profile.memory`). Latency target: 2 to 3s per turn, so no agent hop for lookups. Disruption agent (`disruption.py`) for weather/disruption questions only; it never writes.
+- `agents/` desk agent (`travel_desk.py`) with direct Duffel read tools; Flight Ops agent for writes (`flight_ops.py`); bookings record (`traveler_profile.load`, once per session) and policy rules (`policy.py`) in the desk prompt, Memory recalled on every model call (`traveler_profile.memory`, trigger `everyTurn`). Latency target: 2 to 3s per turn, so no agent hop for lookups. Disruption agent (`disruption.py`) for weather/disruption questions only; it never writes.
 - Use Strands built ins over hand written machinery: `Agent.as_tool` for sub agents, agent state for session data,
   interventions (`Confirm` interrupt, `Transform`) for the write gate and the traveler id, Gateway MCP tools
   (`common.gateway_tools`), `MemoryManager` for recall, structured output.
@@ -37,6 +37,7 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 - Every "you usually..." / historical claim must be backed by the bookings record or the Memory recalled for this turn.
 - Prices, refund amounts, order ids are read from tool results, never recalled from memory or model.
 - Memory namespaces are scoped by actor_id. Cross actor retrieval is a hard failure in evals.
+- Eval traffic never writes to Memory: eval session ids start with `eval-` (`travel_desk.memory_session`).
 - Cedar, prompts and eval dataset are versioned in git. A prompt change without an eval run is not merged.
 
 ## Coding style
@@ -49,6 +50,7 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 ## Commands
 - `uv sync` install (`uv sync --group evals` adds Strands Decider + torch)
 - `uv run python scripts/seed_duffel_history.py` create synthetic past orders for 3 travelers
+- `uv run python scripts/seed_memory_sessions.py --clean [--apply]` drop duplicate, wrong and cross traveler Memory records
 - `uv run python agents/travel_desk.py --actor cust_marios` run the desk locally (through the deployed Gateway)
 - `agentcore deploy -y` deploy everything (needs `uv` on PATH; `cd agentcore/cdk && npm ci` once)
 - `uv run python scripts/check_gateway_policies.py` live Cedar + Lambda checks (`--writes` books and cancels one flight)
@@ -58,6 +60,8 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 - `uv run --group evals python evals/run_offline.py --suite dataset --judges --agentcore --decider --cloudwatch
   --label eval-<sha>` full eval (150 cases; Phoenix experiment + CloudWatch dashboard TravelConcierge-Evals)
 - `uv run python evals/build_dataset.py` regenerate `evals/dataset/` (review the diff)
+- `uv run --group evals python evals/run_offline.py --phoenix-judges` register/update the two custom judges as Phoenix
+  evaluators (eval traces go to the Phoenix project `travel-concierge-evals`)
 - `uv run --group evals python evals/run_runtime.py --batch` dataset subset on the deployed Runtime + AgentCore batch eval
 - `uv run --group evals python evals/calibrate_decider.py` Decider thresholds -> `evals/decider_thresholds.json`;
   `evals/label_queue.py` lists transcripts to label in Phoenix (`human:<question>`)

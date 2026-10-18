@@ -57,4 +57,5 @@ if __name__ == "__main__":
     assert actor_of({}, {"X-Actor-Id": "cust_a"}) == "cust_a"
     assert actor_of({"actor_id": "cust_b"}, {}) == "cust_b"
     assert actor_of({}, {ACTOR_HEADER: "default-user"}) is None and actor_of({}, None) is None
+    assert travel_desk.memory_session("cust_a", "eval-rt-x") is None  # eval sessions never reach Memory
     app.run()
