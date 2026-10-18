@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
   "strands-agents[otel]",
+  "openinference-instrumentation-strands-agents",
   "bedrock-agentcore",
   "boto3",
   "mcp-proxy-for-aws>=1.7.0",

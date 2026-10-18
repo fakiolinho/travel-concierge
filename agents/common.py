@@ -66,9 +66,18 @@ def setup_tracing():
 
     # ponytail: local file with unredacted conversation text. Upgrade: AgentCore Observability (CloudWatch) in
     # Runtime via an OTLP exporter, PII redaction via Guardrails (step 4).
+    from openinference.instrumentation.strands_agents import StrandsAgentsToOpenInferenceProcessor
+
     LOG_DIR.mkdir(exist_ok=True)
     path = LOG_DIR / f"traces-{dt.date.today()}.jsonl"
+    # Resource attributes Strands reads from the standard OTel variables: service name, and the Phoenix project.
+    os.environ.setdefault("OTEL_SERVICE_NAME", "travel-concierge")
+    os.environ.setdefault("OTEL_RESOURCE_ATTRIBUTES", "openinference.project.name=travel-concierge")
     telemetry = StrandsTelemetry()
+    # Arize's processor copies Strands' gen_ai message events into OpenInference attributes (input/output
+    # messages, tool calls, span kinds), so Phoenix can show prompts and answers. Added first: processors run in
+    # order, and both exporters below should see the enriched spans.
+    telemetry.tracer_provider.add_span_processor(StrandsAgentsToOpenInferenceProcessor())
     telemetry.setup_console_exporter(out=path.open("a"), formatter=lambda s: s.to_json(indent=None) + "\n")
     # Also stream spans to a trace UI (Phoenix, Jaeger, ...) when the standard OTel endpoint variable is set.
     if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
@@ -84,7 +93,9 @@ def agent(role, **kw):
     the desk streams to stdout."""
     if role != "desk":
         kw.setdefault("callback_handler", None)
-    attrs = {"session.id": S.get("session_id") or "", "actor.id": S.get("actor_id") or "", "agent.role": role}
+    # session.id and user.id are OpenInference keys: Phoenix groups spans into sessions and filters by user on them.
+    actor = S.get("actor_id") or ""
+    attrs = {"session.id": S.get("session_id") or "", "user.id": actor, "actor.id": actor, "agent.role": role}
     return Agent(name=role, model=model(role), trace_attributes=attrs, **kw)
 
 
