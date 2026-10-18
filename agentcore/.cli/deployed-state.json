@@ -22,6 +22,9 @@
               "gatewayArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf",
               "gatewayUrl": "https://travelconcierge-traveldeskgateway-a4bksxcakf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
               "targets": {
+                "TripIntel": {
+                  "targetId": "XQ3SURF3ZI"
+                },
                 "Duffel": {
                   "targetId": "J58XEWM5RY"
                 }
@@ -50,10 +53,25 @@
             "policyId": "forbid_desk_writes-92oq01zup3",
             "policyArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:policy-engine/TravelConcierge_TravelDeskPolicies-i0o6fmoi7w/policy/forbid_desk_writes-92oq01zup3",
             "engineName": "TravelDeskPolicies"
+          },
+          "TravelDeskPolicies/disruption_reads": {
+            "policyId": "disruption_reads-pxm1s71sb5",
+            "policyArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:policy-engine/TravelConcierge_TravelDeskPolicies-i0o6fmoi7w/policy/disruption_reads-pxm1s71sb5",
+            "engineName": "TravelDeskPolicies"
+          },
+          "TravelDeskPolicies/forbid_disruption_writes": {
+            "policyId": "forbid_disruption_writes-cx5jo36_ro",
+            "policyArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:policy-engine/TravelConcierge_TravelDeskPolicies-i0o6fmoi7w/policy/forbid_disruption_writes-cx5jo36_ro",
+            "engineName": "TravelDeskPolicies"
+          },
+          "TravelDeskPolicies/trip_intel_reads": {
+            "policyId": "trip_intel_reads-nfxwpmauoc",
+            "policyArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:policy-engine/TravelConcierge_TravelDeskPolicies-i0o6fmoi7w/policy/trip_intel_reads-nfxwpmauoc",
+            "engineName": "TravelDeskPolicies"
           }
         },
         "stackName": "AgentCore-TravelConcierge-default",
-        "deployHash": "ac53637f416db696"
+        "deployHash": "087122236271fcff"
       }
     }
   }
