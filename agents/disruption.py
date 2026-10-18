@@ -93,11 +93,11 @@ class DisruptionReport(BaseModel):
     risk: Literal["low", "medium", "high", "unknown"] = Field(
         description="worst risk across the flight's airports; unknown when no forecast covers the flight yet"
     )
-    summary: str = Field(description="one or two plain sentences for the caller")
+    summary: str = Field(description="one or two short plain sentences for the caller")
     evidence: list[str] = Field(
-        description="each line names the airport, the source (METAR, TAF, forecast) and the value"
+        description="at most 5 short lines; each names the airport, the source (METAR, TAF, forecast) and the value"
     )
-    compensation: str = Field(description="what the disruption policy rule means for this case, quoted, no promises")
+    compensation: str = Field(description="one sentence: what the disruption rule means here, no promises")
     rebooking_options: list[RebookOption] = Field(default=[], description="only when risk is high, from flight_ops")
 
 
@@ -109,8 +109,8 @@ PROMPT = """You are the Disruption desk of an airline contact center. Now is {no
 puts a flight at risk, and what the traveler's options are. You never change a booking.
 
 How to work:
-- You need the flight's airports and departure time. If the request only has an order id or booking reference,
-  ask flight_ops for the order first.
+- You need the flight's airports and departure time. If the request has them, use them. If it only has an order
+  id, look it up with get_order.
 - Departure within about 30 hours: airport_weather and airport_forecast for the departure and arrival airports.
 - Departure within 15 days: destination_forecast for both airports on the travel date.
 - Further out: there is no forecast yet. Say so, give the date it becomes available, and set risk to unknown.
@@ -143,10 +143,11 @@ def build():
             airport_forecast,
             destination_forecast,
             public_holidays,
+            fo.get_order,  # direct lookup, signed as Disruption (Cedar: get_order allowed); saves an agent hop
             ops.as_tool(
                 name="flight_ops",
-                description="Read only Flight Ops: details of one of the traveler's orders, and priced options to "
-                "move it to another date. Give the order id and, for options, the new date(s). Changes nothing.",
+                description="Read only Flight Ops, for rebooking options when risk is high: priced options to move "
+                "an order to other dates. Give the order id and the new date(s). Changes nothing.",
             ),
         ],
         structured_output_model=DisruptionReport,

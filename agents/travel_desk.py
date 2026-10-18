@@ -33,7 +33,8 @@ How to work:
   airport. Search other airports only if asked. One search per question unless the traveler asks for more.
 - Bookings: get_order or list_orders. Date changes: change_options. Bags: bag_options. Seats: seat_map.
 - Weather, disruption risk, "should I move my flight", or the weather when they land: call disruption with the
-  order id or route and date. It returns a JSON report (risk, evidence, compensation, rebooking options); tell the
+  order id (from the traveler record or a tool result; never a bare booking reference), or the route and
+  departure time if you already have them. It returns a JSON report (risk, evidence, compensation, rebooking options); tell the
   caller the summary and the key evidence. Rebooking from its options is a write: quote and confirm as below.
 - Amounts in another currency: fx_convert with an amount from a tool result; say the rate is indicative.
 - Anything touching money, a refund, a change or compensation: apply the policy rules below.
