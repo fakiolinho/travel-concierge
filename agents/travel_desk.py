@@ -110,7 +110,8 @@ def main():
 def turn(desk, actor, msg, key):
     common.user_turn(msg)
     t0 = time.perf_counter()
-    if hit := common.cache_get(key):
+    cache_on = os.environ.get("ANSWER_CACHE", "on") != "off"  # evals turn it off: a cached turn has no spans
+    if cache_on and (hit := common.cache_get(key)):
         # ponytail: a cached turn never reaches the model, so it is neither traced nor persisted to Memory.
         desk.messages += [
             {"role": "user", "content": [{"text": msg}]},
@@ -127,7 +128,7 @@ def turn(desk, actor, msg, key):
     secs = time.perf_counter() - t0
     if common.S["wrote"]:
         common.cache_drop(actor)
-    elif not common.S["touched_write"]:
+    elif not common.S["touched_write"] and cache_on:
         expires = min(common.S["expires"] or float("inf"), time.time() + common.CACHE_TTL)
         if expires > time.time():
             common.cache_put(key, answer, expires)

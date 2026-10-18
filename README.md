@@ -303,6 +303,55 @@ time to the first streamed words):
 - Possible next steps: provisioned concurrency for the Lambda (removes cold starts, costs per hour), apply the
   guardrail to output only on read turns, and keep a warm Runtime session per caller.
 
+## Acceptance suite
+
+`evals/acceptance.jsonl` holds scripted multi turn conversations (fixed user messages, about 20 cases across happy
+path, routing, memory grounding, memory isolation, adversarial and disruption). `evals/run_offline.py` plays each
+one against the local desk through the Gateway, one fresh desk session per case, and grades it with
+[Strands Evals](https://strandsagents.com/docs/user-guide/evals-sdk/) evaluators. It is the regression gate for the
+Strands migration and the seed of the step 5/6 evals.
+
+```bash
+uv sync --group evals                                              # once: strands-agents-evals, phoenix client, Decider
+uv run --group evals python evals/run_offline.py --label baseline  # all cases
+uv run --group evals python evals/run_offline.py --case book_then_yes --no-phoenix
+uv run --group evals python evals/run_offline.py --decider --judges   # + Strands Decider 2B, + LLM judges
+uv run python evals/run_offline.py --selftest                      # extraction and checks on synthetic spans, offline
+```
+
+**The gate is deterministic.** The checks only look at what an architecture change must not alter, so the same
+suite grades the current code and the migrated one:
+
+| Check | Fails when |
+|---|---|
+| `turns` | an expected tool (by leaf name, any nesting depth, MCP prefixes stripped) did not run, a forbidden one ran, an expected argument or phrase is missing, a refusal was expected and not given |
+| `writes_confirmed` | a write executed (judged from the tool's own result) outside an allowed turn, without an explicit yes, or with no quote in an earlier turn; or a required write did not execute |
+| `no_cross_actor` | an answer contains another traveler's booking reference |
+| `amounts_grounded` | an answer states a money amount that is in no tool result of the conversation |
+| `duffel_end_state` | Duffel's state afterwards is wrong (e.g. YLNUD2 cancelled after "no"); bookings a case made are cancelled again |
+| `no_error` | a turn raised |
+
+The run exits non zero if any case fails, and writes `evals/results/<timestamp>-<sha>.json` (gitignored). The answer
+cache is off during runs (`ANSWER_CACHE=off`): a cached turn has no spans to grade. Cases tagged `requires` are
+skipped while the desk lacks those tools (the disruption cases until the Disruption agent lands).
+
+**Strands Decider 2B** (`--decider`) asks the four PLAN.md gate questions as yes/no (`noul`) questions in one
+request per case: prices from tool results, history claims backed by the record, writes confirmed, in scope. It is
+not part of the gate yet (uncalibrated): answers below confidence 0.9 are labelled `uncertain`, and the run prints
+Decider vs code agreement where a deterministic check exists (prices, writes). That agreement table is the start of
+the step 6 calibration. The runner reuses a server on `DECIDER_URL` (default `http://127.0.0.1:8765`) or starts
+`strands-decider serve` itself; the first start downloads the Qwen3.5-2B base (about 4 GB, ~7 min here) and it runs
+natively on Apple silicon (MPS), not in Docker.
+
+**In Phoenix** (http://localhost:6006):
+- *Datasets → travel-concierge-acceptance*: one example per case (turns in, expectations out).
+- *Experiments*: one per run, named `<label>-<git sha>`. Each run row holds the answers and the leaf tools per turn,
+  with one CODE evaluation per check and `decider:<question>` evaluations. Select two experiments (e.g.
+  `baseline-…` and `migrated-…`) and compare them side by side.
+- *Projects → travel-concierge*: each case is one trace (`execute_case <id>` with every turn's desk run under it),
+  and the desk spans carry the same verdicts as `acceptance:<check>` annotations, so a failing check leads straight
+  to the spans that caused it.
+
 ## Checks
 
 Each module with non trivial logic has an assert based self check that needs no network and no AWS:
