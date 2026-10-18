@@ -1,5 +1,7 @@
-"""Live check of the Gateway guardrails (Cedar + Lambda), no model involved. Writes only ever quote: nothing is
-cancelled. Run after `agentcore deploy`:  uv run python scripts/check_gateway_policies.py
+"""Live check of the Gateway guardrails (Cedar + Lambda), no model involved. Run after `agentcore deploy`:
+uv run python scripts/check_gateway_policies.py            writes only quote, nothing changes
+uv run python scripts/check_gateway_policies.py --writes   also books a flight for cust_nikos and cancels it
+                                                           (Duffel test mode), to exercise the confirm paths
 """
 
 import datetime as dt, json, sys
@@ -57,6 +59,29 @@ results = [
         denied(call("flight_ops", "cust_eleni", "cancel_order", order_id=marios_order)),
     ),
 ]
+if "--writes" in sys.argv:
+    nikos_offer = call(
+        "desk", "cust_nikos", "search_flights", origin="ATH", destination="BCN", departure_date=SEARCH_DATE
+    )[0]
+    booked = call("flight_ops", "cust_nikos", "book_offer", offer_id=nikos_offer["offer_id"], confirm=True)
+    order_id = booked.get("order", {}).get("order_id")
+    results.append(("flight_ops books an offer, tagged to the traveler", bool(booked.get("booked") and order_id)))
+    results.append(
+        (
+            "the new order is readable by its traveler",
+            not denied(call("desk", "cust_nikos", "get_order", order_id=order_id)),
+        )
+    )
+    results.append(("and not by another traveler", denied(call("desk", "cust_marios", "get_order", order_id=order_id))))
+    quote = call("flight_ops", "cust_nikos", "cancel_order", order_id=order_id)
+    done = call("flight_ops", "cust_nikos", "cancel_order", order_id=order_id, quote_id=quote.get("quote_id"))
+    results.append(
+        (
+            "flight_ops cancels it by quote id",
+            bool(done.get("cancelled_at")) and done.get("refund_amount") == quote.get("refund_amount"),
+        )
+    )
+
 for name, ok in results:
     print("PASS" if ok else "FAIL", name)
 assert all(ok for _, ok in results), "gateway policy check failed"

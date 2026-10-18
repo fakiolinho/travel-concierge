@@ -1,7 +1,7 @@
 """Shared bits for the local run: agent factory, tracing setup, session state, fixture history, answer cache,
 write confirmation gate."""
 
-import datetime as dt, hashlib, json, logging, os, re, sys, time
+import datetime as dt, hashlib, json, logging, os, re, sys, threading, time
 from pathlib import Path
 
 from strands import Agent
@@ -220,10 +220,23 @@ ACTOR_TOOLS = {
     "add_bag",
 }
 _gateways = {}
+_gateway_locks = {role: threading.Lock() for role in GATEWAY_ROLES}  # per role: warm both in parallel
 
 
 def gateway(role):
     """One MCP session per agent role, signed with SigV4 as that role's assumed IAM identity."""
+    with _gateway_locks[role]:  # a background warm up and the first real call must not open two sessions
+        return _gateway(role)
+
+
+def warm_gateways():
+    """Open both Gateway sessions in the background at session start (STS + MCP handshake, about 1 to 3s each),
+    so no caller turn pays for it."""
+    for role in GATEWAY_ROLES:
+        threading.Thread(target=gateway, args=(role,), daemon=True).start()
+
+
+def _gateway(role):
     if role not in _gateways:
         import atexit, boto3
         from botocore.credentials import Credentials

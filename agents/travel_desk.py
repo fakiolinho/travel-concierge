@@ -67,6 +67,7 @@ def memory_session(actor_id, session_id):
 
 def build(actor_id, session_manager=None, session_id=None):
     common.start(actor_id, session_id)
+    common.warm_gateways()  # desk + Flight Ops sessions open while the record loads
     profile = tp.load(actor_id)
     rules = "\n".join(f"- {k}: {v}" for k, v in pol.RULES.items())
     return common.agent(
