@@ -34,7 +34,9 @@ SUITES = {  # suite -> (case files, Phoenix dataset)
 }  # fmt: skip
 RESULTS = ROOT / "evals/results"
 THRESHOLDS = ROOT / "evals/decider_thresholds.json"  # written by evals/calibrate_decider.py
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL_ID", "us.anthropic.claude-sonnet-5-5")
+# Haiku 5.5, not Sonnet 5.5: when a judge answers in text, Strands structured output retries with a forced tool_choice,
+# which Sonnet 5.5 rejects (400 "tool_choice: type tool and any are not supported"); 520 judge calls failed that way.
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL_ID", "us.anthropic.claude-haiku-5-5")
 SIM_MODEL = os.environ.get("SIMULATOR_MODEL_ID", "us.anthropic.claude-haiku-5-5")
 # AgentCore built in evaluators (ids from `aws bedrock-agentcore-control list-evaluators`), scored by the AgentCore
 # Evaluation API on the converted spans; custom ones come from AGENTCORE_EVALUATORS (comma separated ids/ARNs).
@@ -751,6 +753,8 @@ def main():
     )
     table = category_table(cases, results)
     print_category_table(table)
+    if errs := {cat: row["judge_errors"] for cat, row in table.items() if row.get("judge_errors")}:
+        print(f"judge errors (excluded from the means): {errs}")
 
     agreement = {}
     if args.decider and decider.ok:
@@ -831,9 +835,18 @@ def run_judges(args, cases, runs, results, common, Case, Experiment, Evaluator):
                 upd["actual_trajectory"] = self.traj(c, run)
             if self.context:
                 upd |= {"input": judge_context(c, run), "actual_output": "\n\n".join(t["answer"] for t in run["turns"])}
-            outs = self.inner.evaluate(ec.model_copy(update=upd) if upd else ec)
+            mine = results.setdefault(c["id"], {}).setdefault("judges", {})
+            try:
+                outs = self.inner.evaluate(ec.model_copy(update=upd) if upd else ec)
+            except Exception as e:  # recorded, not dropped: a missing verdict would bias the category means
+                mine[self.name] = {"error": repr(e)[:500], "kind": self.kind}
+                raise
+            errs = [o.reason for o in outs if o.label == "error"]
+            outs = [o for o in outs if o.label != "error"]
+            if errs and not outs:
+                mine[self.name] = {"error": " | ".join(errs)[:500], "kind": self.kind}
             if outs:
-                results.setdefault(c["id"], {}).setdefault("judges", {})[self.name] = {
+                mine[self.name] = {
                     "score": round(statistics.fmean(o.score for o in outs), 3),
                     "pass": all(o.test_pass for o in outs),
                     "reason": " | ".join(o.reason or "" for o in outs)[:1500],
@@ -978,7 +991,11 @@ def category_table(cases, results):
         row["n"] += 1
         row["gate_pass"] += all(v["ok"] for k, v in r.items() if k in CHECKS)
         for name, j in (r.get("judges") or {}).items():
-            row["scores"].setdefault(name, []).append(j["score"])
+            if "error" in j:
+                row.setdefault("judge_errors", {}).setdefault(name, 0)
+                row["judge_errors"][name] += 1
+            else:
+                row["scores"].setdefault(name, []).append(j["score"])
         for q, a in ((r.get("decider") or {}).get("answers") or {}).items():
             row["scores"].setdefault(f"decider:{q}", []).append(a["p_yes"])
     for row in table.values():
@@ -1109,7 +1126,10 @@ def phoenix_log(cases, runs, results, label, sha, dataset):
         for q, a in (res.get("decider") or {}).get("answers", {}).items():
             verdicts.append((f"decider:{q}", a["p_yes"], a["label"], f"confidence {a['confidence']}", "LLM"))
         for name, j in (res.get("judges") or {}).items():
-            verdicts.append((f"judge:{name}", j["score"], "pass" if j["pass"] else "fail", j["reason"], j["kind"]))
+            if "error" in j:
+                verdicts.append((f"judge:{name}", None, "error", j["error"], j["kind"]))
+            else:
+                verdicts.append((f"judge:{name}", j["score"], "pass" if j["pass"] else "fail", j["reason"], j["kind"]))
         for name, score, lab, why, kind in verdicts:
             px.experiments.log_evaluation(
                 experiment_run_id=r["id"], name=name, annotator_kind=kind, score=score, label=lab, explanation=why
