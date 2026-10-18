@@ -737,14 +737,13 @@ def main():
     if args.decider and decider.ok:
         print(f"\nStrands Decider 2B ({decider.note})")
         for q, chk in DECIDER_PAIRS.items():
-            pairs = [
-                (r["decider"]["answers"][q]["label"] != "fail", r[chk]["ok"])
-                for r in results.values()
-                if "decider" in r and chk in r
-            ]
-            agree = sum(a == b for a, b in pairs)
-            agreement[q] = {"code_check": chk, "agree": agree, "n": len(pairs)}
-            print(f"agreement {q} vs {chk}: {agree}/{len(pairs)}")
+            rows = [(r["decider"]["answers"][q], r[chk]["ok"]) for r in results.values() if "decider" in r and chk in r]
+            agree = sum((a["p_yes"] >= 0.5) == ok for a, ok in rows)  # raw cut: an "uncertain" label must not count
+            decided = [(a["label"] == "pass", ok) for a, ok in rows if a["label"] != "uncertain"]
+            agreement[q] = {"code_check": chk, "agree_raw": agree, "n": len(rows), "decided": len(decided),
+                            "agree_decided": sum(a == b for a, b in decided)}  # fmt: skip
+            print(f"agreement {q} vs {chk}: p>=0.5 {agree}/{len(rows)}; labelled {len(decided)}/{len(rows)}, "
+                  f"of which agree {agreement[q]['agree_decided']}")  # fmt: skip
 
     usage = token_usage(runs)
     print(f"\nBedrock tokens (agents, from traces): {usage}")
