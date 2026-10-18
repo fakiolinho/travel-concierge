@@ -1,0 +1,13 @@
+# Dependencies of the deployed Travel Desk runtime (agentcore deploy packages agents/ as a CodeZip with these).
+# Local development uses the root pyproject.toml; keep the two in step.
+[project]
+name = "travel-desk-runtime"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "strands-agents[otel]>=1.61",
+  "bedrock-agentcore>=1.24",
+  "boto3",
+  "mcp-proxy-for-aws>=1.7",
+  "aws-opentelemetry-distro>=0.21",
+]

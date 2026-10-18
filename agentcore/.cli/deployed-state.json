@@ -2,6 +2,13 @@
   "targets": {
     "default": {
       "resources": {
+        "runtimes": {
+          "TravelDesk": {
+            "runtimeId": "TravelConcierge_TravelDesk-9ZoiNgAFfn",
+            "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:runtime/TravelConcierge_TravelDesk-9ZoiNgAFfn",
+            "roleArn": "arn:aws:iam::437987386879:role/AgentCore-TravelConcierge-ApplicationAgentTravelDes-hh4Gc0CmlZDz"
+          }
+        },
         "memories": {
           "TravelConciergeMemory": {
             "memoryId": "TravelConciergeMemory-662wvfDcqN",
@@ -46,7 +53,7 @@
           }
         },
         "stackName": "AgentCore-TravelConcierge-default",
-        "deployHash": "6460a96bacea6cad"
+        "deployHash": "ac53637f416db696"
       }
     }
   }

@@ -219,6 +219,26 @@ export class AgentCoreStack extends Stack {
       guardrailIdentifier: guardrail.attrGuardrailId,
       description: 'Pinned for the agents; bump by changing the guardrail and redeploying',
     });
+    // Deployed desk runtime: apply the guardrail, and read/write the traveler Memory (records + conversation events).
+    for (const env of this.application.environments.values()) {
+      env.runtime.role.addToPrincipalPolicy(
+        new iam.PolicyStatement({ actions: ['bedrock:ApplyGuardrail'], resources: [guardrail.attrGuardrailArn] })
+      );
+      env.runtime.role.addToPrincipalPolicy(
+        new iam.PolicyStatement({
+          actions: [
+            'bedrock-agentcore:CreateEvent',
+            'bedrock-agentcore:GetEvent',
+            'bedrock-agentcore:ListEvents',
+            'bedrock-agentcore:ListSessions',
+            'bedrock-agentcore:ListMemoryRecords',
+            'bedrock-agentcore:RetrieveMemoryRecords',
+            'bedrock-agentcore:GetMemoryRecord',
+          ],
+          resources: [`arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`],
+        })
+      );
+    }
     new CfnOutput(this, 'GuardrailIdOutput', { value: guardrail.attrGuardrailId });
     new CfnOutput(this, 'GuardrailVersionOutput', { value: guardrailVersion.attrVersion });
 

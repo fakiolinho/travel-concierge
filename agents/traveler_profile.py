@@ -1,8 +1,10 @@
-"""Traveler Profile: bookings history (evals/fixtures/history.json) + AgentCore Memory, as one record.
+"""Traveler Profile: bookings history (Duffel orders tagged with the traveler, via the Gateway) + AgentCore Memory,
+as one record.
 Plain code, not an agent: it is a lookup, and the desk loads it once per session (no model hop per turn)."""
 
 import json
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 import common
@@ -50,9 +52,17 @@ def summarize(actor_id, trips):
 def load(actor_id):
     """The verified traveler's record: routes, airports, airlines, cabins, orders (from bookings) plus preferences,
     facts and recent session summaries (from AgentCore Memory). Loaded once per session into the desk's prompt."""
-    record = summarize(actor_id, common.history(actor_id))
-    if common.MEMORY_ID:
-        m = common.memory_records(actor_id)
+    # Bookings (Gateway, as the desk) and Memory load in parallel; the Gateway call also warms the desk's session.
+    # No fixture here, so the same code runs in AgentCore Runtime.
+    with ThreadPoolExecutor(2) as pool:
+        orders = pool.submit(common.call_tool, "desk", "list_orders")
+        memory = pool.submit(common.memory_records, actor_id) if common.MEMORY_ID else None
+        orders, m = orders.result(), memory.result() if memory else None
+    error = orders.get("error") if isinstance(orders, dict) else None
+    record = summarize(actor_id, [] if error else [trip(o) for o in orders if o["status"] != "cancelled"])
+    if error:  # say so in the record rather than fail the whole call
+        record["bookings_error"] = error
+    if m:
         record.update(
             preferences=compact_preferences(m["preferences"])[:12],
             # ponytail: newest N, not most relevant, to keep the prompt (and time to first token) small.
@@ -61,6 +71,21 @@ def load(actor_id):
             recent_session_summaries=[" ".join(s.split())[:600] for s in m["summaries"][:2]],
         )
     return record
+
+
+def trip(order):
+    """A normalized Duffel order (duffel.norm_order) in the shape summarize() takes."""
+    first = order["slices"][0]
+    return {
+        "order_id": order["order_id"],
+        "booking_reference": order["booking_reference"],
+        "origin": first["origin"],
+        "destination": first["destination"],
+        "airline": first["segments"][0]["carrier"],
+        "cabin": order.get("cabin") or "unknown",
+        "total": order["total"],
+        "currency": order["currency"],
+    }
 
 
 def compact_preferences(records):
@@ -97,4 +122,8 @@ if __name__ == "__main__":
     assert [o["order_id"] for o in s["orders"]] == ["ord_0", "ord_1", "ord_2"] and "departure" not in str(s)
     prefs = ['{"context": "x", "preference": "Aisle seat", "categories": []}', "Aisle seat", "plain text"]
     assert compact_preferences(prefs) == ["Aisle seat", "plain text"]
+    o = {"order_id": "ord_1", "booking_reference": "R1", "status": "confirmed", "cabin": "economy", "total": "9.00",
+         "currency": "EUR", "slices": [{"origin": "ATH", "destination": "LHR", "segments": [{"carrier": "ZZ Air"}]}]}  # fmt: skip
+    assert summarize("cust_a", [trip(o)])["past_routes"][0]["route"] == "ATH-LHR"
+    assert trip({**o, "cabin": None})["cabin"] == "unknown"
     print("traveler_profile: ok")

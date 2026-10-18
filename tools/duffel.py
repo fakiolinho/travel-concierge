@@ -87,6 +87,15 @@ def norm_order(o):
         "order_id": o["id"],
         "booking_reference": o["booking_reference"],
         "status": "cancelled" if o.get("cancelled_at") else "confirmed",
+        "cabin": next(
+            (
+                sp.get("cabin_class")
+                for s in o["slices"][:1]
+                for g in s["segments"][:1]
+                for sp in g.get("passengers") or []
+            ),
+            None,
+        ),  # fmt: skip
         "total": o["total_amount"],
         "currency": o["total_currency"],
         "slices": [_slice(s) for s in o["slices"]],

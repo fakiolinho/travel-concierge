@@ -7,7 +7,47 @@
     "agentcore:created-by": "agentcore-cli",
     "agentcore:project-name": "TravelConcierge"
   },
-  "runtimes": [],
+  "runtimes": [
+    {
+      "name": "TravelDesk",
+      "build": "CodeZip",
+      "entrypoint": "runtime_app.py",
+      "codeLocation": "agents/",
+      "runtimeVersion": "PYTHON_3_14",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP",
+      "envVars": [
+        {
+          "name": "MEMORY_ID",
+          "value": "TravelConciergeMemory-662wvfDcqN"
+        },
+        {
+          "name": "GATEWAY_URL",
+          "value": "https://travelconcierge-traveldeskgateway-a4bksxcakf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+        },
+        {
+          "name": "GATEWAY_ROLE_DESK",
+          "value": "arn:aws:iam::437987386879:role/TravelConcierge-DeskGateway"
+        },
+        {
+          "name": "GATEWAY_ROLE_FLIGHT_OPS",
+          "value": "arn:aws:iam::437987386879:role/TravelConcierge-FlightOpsGateway"
+        },
+        {
+          "name": "GUARDRAIL_ID",
+          "value": "4zb92qxv52nn"
+        },
+        {
+          "name": "GUARDRAIL_VERSION",
+          "value": "1"
+        }
+      ],
+      "instrumentation": {
+        "enableOtel": true
+      },
+      "requestHeaderAllowlist": ["X-Actor-Id"]
+    }
+  ],
   "memories": [
     {
       "name": "TravelConciergeMemory",
