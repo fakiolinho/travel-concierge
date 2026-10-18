@@ -14,8 +14,8 @@ infrastructure is declared in `agentcore/agentcore.json` and its CDK stack. Eval
 ## How it works
 
 ```
-session start: traveler record = bookings (Gateway list_orders) + AgentCore Memory  ─┐
-               policy rules (agents/policy.py)                                     ─┤ into the desk prompt
+session start: bookings record (Gateway list_orders) + policy rules (agents/policy.py) ─► desk system prompt
+every turn:    AgentCore Memory recall (Strands MemoryManager, this traveler's namespaces) ─► <traveler_memory>
                                                                                     ▼
 caller ─► AgentCore Runtime ─► Travel Desk agent (agents/travel_desk.py, runtime_app.py)   [Bedrock Guardrail]
             ├─► read tools, fx_convert ──────────────── as role TravelConcierge-DeskGateway ──┐
@@ -30,8 +30,28 @@ caller ─► AgentCore Runtime ─► Travel Desk agent (agents/travel_desk.py,
                          ├─► Lambda TravelConcierge-Duffel ─► Duffel (token in Secrets Manager)
                          └─► Lambda TravelConcierge-TripIntel ─► aviationweather.gov (METAR, TAF), Open-Meteo,
                                                                  Nager.Date, Frankfurter, Duffel places
-            * book_offer, change_order, cancel_order, add_bag: quote first, execute only after an explicit yes
+            * book_offer, change_order, cancel_order, add_bag: the call pauses on a Strands interrupt carrying the
+              quote; only an explicit yes in the caller's next message resumes it and runs that exact quote
 ```
+
+**Built on Strands, not hand written.** Each piece of agent machinery is the framework's own:
+
+| Concern | Strands / AgentCore built-in | Where |
+|---|---|---|
+| Sub agents (Flight Ops, Disruption, read only Flight Ops) | `Agent.as_tool()`, built once per session | `flight_ops.build`, `disruption.build` |
+| Session data (verified traveler, session id, quotes) | Agent state, `Agent(state=...)` / `event.agent.state` | `common.session_state`, `common.agent` |
+| Write confirmation | Interventions: `Confirm` (a Strands interrupt) + `Transform` | `common.WriteGate`, `common.ExecuteConfirmed` |
+| Resuming after the caller answers | `interruptResponse` prompt; interrupts from an `as_tool` sub agent reach the desk | `travel_desk.ask`, `runtime_app.invoke` |
+| Gateway tools | `MCPClient` tools as `MCPAgentTool`s (leaf names, system fields hidden from the model) | `common.gateway_tools` |
+| Traveler id on every tool call | Intervention `Transform` overwriting `actor_id` / `guest_verified` | `common.SessionContext` |
+| Gateway credentials | botocore `AssumeRoleCredentialFetcher` + `DeferredRefreshableCredentials` | `common.gateway` |
+| Memory recall | `MemoryManager` over AgentCore `AgentCoreMemoryStore`s, injected per caller turn | `traveler_profile.memory` |
+| Memory persistence | `AgentCoreMemorySessionManager` (batched) | `travel_desk.memory_session` |
+| Guardrail | `BedrockModel` guardrail options (latest message only, async) | `common.model` |
+| `.env` | `python-dotenv` | `common.py` |
+
+Still ours: the answer cache (neither Strands nor AgentCore has one; `ANSWER_CACHE=off` disables it), the bookings
+summary (domain logic), and the timing line (computed from Strands' `event_loop_metrics`).
 
 Agents call agents three levels deep on the disruption path (desk → Disruption → read only Flight Ops), all with
 Strands' native `Agent.as_tool()`. The Disruption agent returns Strands structured output (`DisruptionReport`:
@@ -40,25 +60,27 @@ Flight Ops it calls is built with read tools only and signs as the Disruption id
 every write. Rebooking from its options goes back through the desk's quote and confirmation.
 
 Why this shape: a caller turn has to answer in a few seconds, and every agent hop costs 3 to 9 seconds of extra
-model calls. The traveler record and the policy rules are lookups, so they are loaded once per session into the
-desk's prompt (no tool call, no hop). The desk calls Duffel reads itself. Only writes go to a second agent, Flight
-Ops, because it is the one principal Cedar allows to write. See [Latency](#latency) for measured turn times.
+model calls. The bookings record and the policy rules are lookups, so they are loaded once per session into the
+desk's prompt (no tool call, no hop); Memory is recalled per turn by relevance to the caller's message (0.4 to 0.7s).
+The desk calls Duffel reads itself. Only writes go to a second agent, Flight Ops, because it is the one principal
+Cedar allows to write. See [Latency](#latency) for measured turn times.
 
-The session (verified actor, turn counter, pending writes) lives in `agents/common.py`.
+The session (verified actor, session id, write quotes) lives in each agent's Strands state; a write waiting for the
+caller's answer is on `desk.pending_writes`.
 
 What the code enforces, regardless of what the model decides:
 
 | Rule | Where |
 |---|---|
-| A write runs only after a later user turn whose text starts with an explicit yes | `common.gated` (agent) |
+| A write runs only after the caller's next message, given as the interrupt response, is an explicit yes; it runs exactly the quote the caller heard | `common.WriteGate` + `common.ExecuteConfirmed` (Strands interventions) |
 | Only the Flight Ops identity may call book/change/cancel/add_bag, and only for a verified caller; the desk and Disruption identities never can | Cedar: `policies/*.cedar` |
 | The Disruption identity may read one order and price changes, plus the TripIntel tools; nothing else on Duffel | Cedar: `disruption_reads`, `forbid_disruption_writes`, `trip_intel_reads` |
 | Anything no policy permits is denied | Gateway policy engine, ENFORCE mode |
 | Orders are only visible to the traveler they belong to (Duffel order `metadata.actor_id`) | `tools/lambda_handler.py` (`_owned`) |
 | No cancellation when departure is under 24 hours | `tools/lambda_handler.py` (`cancel_order`) |
-| `actor_id` and `guest_verified` come from the verified session, never from the model (the model's tool schemas don't have them) | `common.call_tool` |
-| The traveler record is loaded for the session's verified actor only | `traveler_profile.load` |
-| Memory is read only under the session actor's namespaces, and stray records are dropped | `common.memory_records` |
+| `actor_id` and `guest_verified` come from the verified session, never from the model (hidden from the model's tool specs, overwritten on every call) | `common.gateway_tools`, `common.SessionContext` |
+| The bookings record is loaded for the session's verified actor only | `traveler_profile.load` |
+| Memory is recalled only from the session actor's namespaces | `traveler_profile.namespaces` / `memory` |
 | The desk persists conversations to Memory but never retrieves from it on its own | `travel_desk.memory_session` |
 | Card and passport numbers are blocked on input and masked on output; visa and medical advice are denied | Bedrock Guardrail (CDK stack) |
 | Models never see raw Duffel JSON; the Duffel token exists only in Secrets Manager and the Lambda | `tools/lambda_handler.py`, `tools/duffel.py` (`norm_*`) |
@@ -191,12 +213,12 @@ against the Gateway's tool list, so add the tool, deploy, then sync the policy a
 
 **Identities.** The Gateway uses AWS_IAM inbound auth. Each agent assumes its own role
 (`TravelConcierge-DeskGateway`, `TravelConcierge-FlightOpsGateway`, `TravelConcierge-DisruptionGateway`; the read
-only Flight Ops inside the Disruption agent signs as Disruption, see `common.GATEWAY_IDENTITY`) and signs its MCP
-calls with SigV4, so Cedar sees `AgentCore::IamEntity::"arn:aws:sts::<account>:assumed-role/<role>"` and can tell
-the agents apart. The
-traveler (`actor_id`) and `guest_verified` are added to every tool call by `common.call_tool` from the verified
-session, where Cedar reads `context.input.guest_verified` and the Lambda checks `actor_id` against the order's
-Duffel `metadata.actor_id`.
+only Flight Ops inside the Disruption agent gets its tools from the Disruption identity) and signs its MCP calls with
+SigV4, so Cedar sees `AgentCore::IamEntity::"arn:aws:sts::<account>:assumed-role/<role>"` and can tell the agents
+apart. The Gateway lists each identity only the tools Cedar permits it. The traveler (`actor_id`) and
+`guest_verified` are filled into every tool call by the `common.SessionContext` intervention from the agent's
+Strands state; Cedar reads `context.input.guest_verified` and the Lambda checks `actor_id` against the order's Duffel
+`metadata.actor_id`. Role credentials refresh before they expire (botocore's own assume role fetcher).
 
 **Runtime.** `agents/` is the runtime code (`runtime_app.py`, dependencies in `agents/pyproject.toml`). Talk to the
 deployed desk with the traveler in the `X-Actor-Id` header (allowlisted) or in the payload:
@@ -330,12 +352,15 @@ tools do not import. Spans are tagged with `session.id`, `actor.id` and `agent.r
 Same four questions on each setup, Sonnet 5.5, warm session (seconds, total turn time; on the Runtime also the
 time to the first streamed words):
 
-| Question | Direct to Duffel (step 3) | Local, via Gateway + Cedar + guardrail | Local, via Gateway, no guardrail | AgentCore Runtime (first words / total) |
-|---|---|---|---|---|
-| Flight search to London | 5.2 | 8.3 | 6.1 | 1.6 / 6.5 |
-| Status of YLNUD2 | 3.2 | 5.8 | 3.7 | 1.5 / 5.0 |
-| Refund if I cancel YLNUD2 (Flight Ops quote) | 10.6 | 12.4 | 9.1 | 2.1 / 11.0 |
-| Usual seat (from the record) | 1.8 | 2.1 | 1.6 | 1.6 / 2.1 |
+| Question | Direct to Duffel (step 3) | Local, via Gateway + Cedar + guardrail | Local, via Gateway, no guardrail | AgentCore Runtime (first words / total) | Local, after the Strands migration |
+|---|---|---|---|---|---|
+| Flight search to London | 5.2 | 8.3 | 6.1 | 1.6 / 6.5 | 10.0 (Duffel search 2.9s that run) |
+| Status of YLNUD2 | 3.2 | 5.8 | 3.7 | 1.5 / 5.0 | 6.2; Runtime 1.7 / 6.5 |
+| Refund if I cancel YLNUD2 (Flight Ops quote) | 10.6 | 12.4 | 9.1 | 2.1 / 11.0 | 7.3 |
+| Usual seat (from Memory) | 1.8 | 2.1 | 1.6 | 1.6 / 2.1 | 2.5 |
+
+After the migration a write quote is one Flight Ops call that stops at the interrupt (7.3s, was 12.4s for quote and
+read back). Every turn now pays the per turn Memory recall (0.4 to 0.7s) instead of a one off load at session start.
 
 - The Gateway adds about 0.2 to 0.3s per warm tool call (Lambda + Cedar): `get_order` 0.5s vs 0.2s direct,
   `search_flights` 1.5s vs 1.3s. A cold Lambda adds 1 to 2s on its first call after idle.
@@ -455,13 +480,13 @@ uv run python scripts/fmt_jsonl.py         # --check to only list files
 
 ```
 agents/                runtime code (deployed as a CodeZip)
-  travel_desk.py       desk agent + local REPL
-  runtime_app.py       AgentCore Runtime entrypoint
-  flight_ops.py        model facing tools (thin Gateway calls) + Flight Ops agent for writes
+  travel_desk.py       desk agent + local REPL (interrupt resume) + respond() for the eval runner
+  runtime_app.py       AgentCore Runtime entrypoint (interrupt resume across invocations)
+  flight_ops.py        Flight Ops agent for writes, as the desk's `flight_ops` tool (Agent.as_tool)
   disruption.py        Disruption agent (weather risk, structured report) + read only Flight Ops, as Strands tools
-  traveler_profile.py  traveler record: bookings via Gateway + Memory records (plain code, loaded per session)
+  traveler_profile.py  bookings record (once per session) + Memory recall (Strands MemoryManager, per turn)
   policy.py            desk policy rules (plain text, in the desk prompt)
-  common.py            models + guardrail, tracing, session, Gateway client, answer cache, confirmation gate
+  common.py            models + guardrail, tracing, agent factory, Gateway tools, interventions, answer cache
   pyproject.toml       runtime dependencies
 tools/
   lambda_handler.py    Gateway Lambda target "Duffel": all tools, ownership, 24h rule
@@ -495,15 +520,14 @@ Shortcuts are marked `# ponytail:` in the code, each naming its limit and upgrad
   realistic.
 - Some test fares offer no extra bags after booking, in which case `bag_options` returns an empty list.
 - Policy rules are inline text in `agents/policy.py`, not a knowledge base yet; the guardrail has no grounding check.
-- One caller per process (one per microVM on Runtime). The session is a module level dict.
-- Confirmation is detected with a regex on the start of the user's message.
+- One caller per process (one per microVM on Runtime): Gateway clients are shared per process, sessions are not.
+- Confirmation: the interrupt response must start with an explicit yes (`common.affirmed`, the `Confirm` evaluate).
+  Anything else declines the write, so a caller who answers a quote with a new request has to repeat it.
 - The traveler is asserted by the caller of the Runtime (`X-Actor-Id`), not proven by a token. The upgrade is
   CUSTOM_JWT inbound auth with the traveler's verified identity as a claim.
 - `list_orders` lists the whole Duffel test account and filters by `metadata.actor_id`.
-- Gateway role credentials are 1 hour STS credentials, not refreshed within a session.
 - Resource ids (Gateway URL, roles, guardrail) are copied into `.env` and the runtime `envVars` by hand.
-- The profile lists all of a traveler's Memory records rather than searching them, which is fine at about
-  60 records per traveler.
+- Memory recall runs on every caller turn (0.4 to 0.7s, top 12 records by relevance to the caller's message).
 - METAR/TAF and airport lookups are cached per Lambda container, not shared. Weather risk rules are simple
   thresholds, not an airline's operational model. Disruption risk only uses weather (no ATC flow or strike data).
 - Memory learns from test conversations too: asking for prices in dollars made Memory record "Wants prices shown

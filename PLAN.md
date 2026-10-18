@@ -7,9 +7,10 @@ Prove a production grade pattern for contact center agents: multi agent orchestr
 ## Architecture
 ```
 Caller ─► Travel Desk (agent, AgentCore Runtime)
-            │ prompt holds: Traveler Profile record (Duffel orders by actor + AgentCore Memory prefs, facts, summaries),
-            │               loaded once per session; Policy rules (refund/change, 24h, disruption compensation)
-            │ writes the conversation to Memory, never retrieves from it directly
+            │ prompt holds: bookings record (Duffel orders by actor), loaded once per session; Policy rules
+            │               (refund/change, 24h, disruption compensation)
+            │ each turn: AgentCore Memory recall (prefs, facts, summaries) by Strands MemoryManager, actor scoped
+            │ writes the conversation to Memory (session manager)
             ├─► Duffel read tools  search_flights, get_order, list_orders, seat_map, change_options, bag_options
             ├─► fx_convert         ECB rates (Frankfurter)
             ├─► Disruption (agent) airport_weather (METAR), airport_forecast (TAF), destination_forecast (Open-Meteo),
@@ -28,10 +29,12 @@ multi agent path (8 to 15s); ordinary turns keep the fast path.
 
 ## Orchestrator loop
 1. Verify caller → `actor_id`, `guest_verified=true`.
-2. Session start: load the Traveler Profile record (past_routes, preferred_airports, preferences, facts, summaries) into the prompt.
+2. Session start: load the bookings record (past_routes, preferred_airports, orders) into the prompt; each turn,
+   recall the traveler's Memory (preferences, facts, summaries) for that message.
 3. Reads (search, orders, seats, change/bag options) with the desk's own tools, constrained by the profile.
 4. Anything touching money or a change → apply the Policy rules in the prompt, then present options.
-5. Write → Flight Ops quotes; explicit confirmation turn → Flight Ops executes.
+5. Write → Flight Ops calls the write tool; a Strands interrupt pauses the call with the quote; the caller's next
+   message resumes it, and only an explicit yes executes that quote.
 6. Session summary auto written to Memory.
 
 ## Memory
@@ -40,7 +43,8 @@ Resource: `TravelConciergeMemory`
 - Semantic        → `/users/{actorId}/facts/`
 - Summary         → `/summaries/{actorId}/{sessionId}/`
 Strands: `AgentCoreMemorySessionManager(AgentCoreMemoryConfig(memory_id, session_id, actor_id))` on the desk, flush on exit.
-Persistence only, no retrieval_config: every historical claim must trace to the profile record loaded at session start.
+Recall: Strands `MemoryManager` over recall only `AgentCoreMemoryStore`s (the traveler's preferences, facts and
+summaries subtree), injected into each caller turn; every historical claim must trace to the record or that recall.
 Messages are batched (flush every 30s and on close) so persistence adds no time inside a turn.
 Seed with 10 to 15 scripted past sessions per traveler so extractors have real material.
 Structured history (prices, routes, dates) comes from Duffel orders, never from LLM memory.

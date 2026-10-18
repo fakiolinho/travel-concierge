@@ -17,9 +17,12 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
   Secret values (the Duffel token) are put by `scripts/prepare_gateway.py`, never in a template.
 
 ## Layout
-- `agents/` desk agent (`travel_desk.py`) with direct Duffel read tools; Flight Ops agent for writes (`flight_ops.py`); traveler record loader (`traveler_profile.py`) and policy rules (`policy.py`), both loaded into the desk prompt per session. Latency target: 2 to 3s per turn, so no agent hop for lookups. Disruption agent (`disruption.py`) for weather/disruption questions only; it never writes. Use Strands built ins (`Agent.as_tool`, structured output, ToolContext) over hand written machinery.
-- `agents/` is also the AgentCore Runtime code (`runtime_app.py`, `agents/pyproject.toml`); every Duffel call goes
-  through the Gateway as the calling agent's own IAM role (`common.call_tool`).
+- `agents/` desk agent (`travel_desk.py`) with direct Duffel read tools; Flight Ops agent for writes (`flight_ops.py`); bookings record (`traveler_profile.load`, once per session) and policy rules (`policy.py`) in the desk prompt, Memory recalled per turn (`traveler_profile.memory`). Latency target: 2 to 3s per turn, so no agent hop for lookups. Disruption agent (`disruption.py`) for weather/disruption questions only; it never writes.
+- Use Strands built ins over hand written machinery: `Agent.as_tool` for sub agents, agent state for session data,
+  interventions (`Confirm` interrupt, `Transform`) for the write gate and the traveler id, Gateway MCP tools
+  (`common.gateway_tools`), `MemoryManager` for recall, structured output.
+- `agents/` is also the AgentCore Runtime code (`runtime_app.py`, `agents/pyproject.toml`); every tool call goes
+  through the Gateway as the calling agent's own IAM role.
 - `tools/` Duffel client + the Gateway Lambdas (`lambda_handler.py` for Duffel, `trip_intel.py` for TripIntel). Normalize Duffel JSON to our schema before it reaches any LLM.
   Order ownership = Duffel order `metadata.actor_id`, checked in the Lambda.
 - `policies/` Cedar policies. Default deny. Only Flight Ops principal may call write tools. Edit the `.cedar` file,
@@ -29,9 +32,9 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 
 ## Hard rules
 - Agents never see raw API keys. Duffel token lives in Secrets Manager; Lambdas read it.
-- No write tool (`book_offer`, `change_order`, `cancel_order`, `add_bag`) without an explicit confirmation turn in the same session.
-- `actor_id` and `guest_verified` are filled from the verified session in code, never exposed to or supplied by a model.
-- Every "you usually..." / historical claim must be backed by the traveler record loaded by `traveler_profile.load` for this session.
+- No write tool (`book_offer`, `change_order`, `cancel_order`, `add_bag`) without an explicit confirmation turn in the same session: enforced by a Strands interrupt (`common.WriteGate`), the caller's next message is the answer.
+- `actor_id` and `guest_verified` are filled from the verified session in code (`common.SessionContext`), never exposed to or supplied by a model.
+- Every "you usually..." / historical claim must be backed by the bookings record or the Memory recalled for this turn.
 - Prices, refund amounts, order ids are read from tool results, never recalled from memory or model.
 - Memory namespaces are scoped by actor_id. Cross actor retrieval is a hard failure in evals.
 - Cedar, prompts and eval dataset are versioned in git. A prompt change without an eval run is not merged.
