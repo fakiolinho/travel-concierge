@@ -9,7 +9,7 @@ import argparse, datetime as dt, json, os, time, uuid
 
 from strands import tool
 
-import common, flight_ops as fo, policy as pol, traveler_profile as tp
+import common, disruption as dis, flight_ops as fo, policy as pol, traveler_profile as tp
 
 
 @tool
@@ -32,6 +32,10 @@ How to work:
 - Flights to a city: search the airport the traveler has used for that city in their record; if none, the main
   airport. Search other airports only if asked. One search per question unless the traveler asks for more.
 - Bookings: get_order or list_orders. Date changes: change_options. Bags: bag_options. Seats: seat_map.
+- Weather, disruption risk, "should I move my flight", or the weather when they land: call disruption with the
+  order id or route and date. It returns a JSON report (risk, evidence, compensation, rebooking options); tell the
+  caller the summary and the key evidence. Rebooking from its options is a write: quote and confirm as below.
+- Amounts in another currency: fx_convert with an amount from a tool result; say the rate is indicative.
 - Anything touching money, a refund, a change or compensation: apply the policy rules below.
 - Writes (book a searched flight, change, cancel, add bag): call flight_ops; it returns a quote. Read it back exactly and ask for an
   explicit yes. Only after the traveler says yes in a later message, call flight_ops again stating they confirmed.
@@ -72,7 +76,7 @@ def build(actor_id, session_manager=None, session_id=None):
     rules = "\n".join(f"- {k}: {v}" for k, v in pol.RULES.items())
     return common.agent(
         "desk",
-        tools=[*fo.READ_TOOLS, flight_ops],
+        tools=[*fo.READ_TOOLS, dis.fx_convert, dis.build(), flight_ops],
         session_manager=session_manager,
         system_prompt=PROMPT.format(
             now=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"),

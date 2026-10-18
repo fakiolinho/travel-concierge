@@ -18,11 +18,15 @@ if (ROOT / ".env").exists():
         if sep and not k.lstrip().startswith("#"):
             os.environ.setdefault(k.strip(), v.strip())
 
-# Two agents: the desk holds the conversation and the reads; Flight Ops makes the writes.
+# The desk holds the conversation and the reads; Flight Ops makes the writes. The Disruption agent (and the read only
+# Flight Ops it calls) run on Haiku 5.5: their judgement rests on risk signals computed in code, and Strands
+# structured output falls back to forced tool choice, which Sonnet 5.5 rejects (400) and Haiku 5.5 accepts.
 # Override any of them with MODEL_ID_<ROLE> in .env. Re-run evals before changing a default.
 MODELS = {
     "desk": "us.anthropic.claude-sonnet-5-5",
     "flight_ops": "us.anthropic.claude-sonnet-5-5",
+    "disruption": "us.anthropic.claude-haiku-5-5",
+    "flight_ops_read": "us.anthropic.claude-haiku-5-5",
 }
 MODELS = {role: os.environ.get(f"MODEL_ID_{role.upper()}", m) for role, m in MODELS.items()}
 HISTORY = ROOT / "evals/fixtures/history.json"
@@ -218,7 +222,11 @@ GATEWAY_URL = os.environ.get("GATEWAY_URL", "")
 GATEWAY_ROLES = {
     "desk": os.environ.get("GATEWAY_ROLE_DESK", ""),
     "flight_ops": os.environ.get("GATEWAY_ROLE_FLIGHT_OPS", ""),
+    "disruption": os.environ.get("GATEWAY_ROLE_DISRUPTION", ""),  # reads only, Cedar forbids every write
 }
+# Agents that sign as another agent's identity: the read only Flight Ops inside the Disruption agent signs as
+# Disruption, so even a write tool there would be denied by Cedar, on top of it having no write tools at all.
+GATEWAY_IDENTITY = {"flight_ops_read": "disruption"}
 GATEWAY_TARGET = "Duffel"
 ACTOR_TOOLS = {
     "get_order",
@@ -243,8 +251,9 @@ def gateway(role):
 def warm_gateways():
     """Open both Gateway sessions in the background at session start (STS + MCP handshake, about 1 to 3s each),
     so no caller turn pays for it."""
-    for role in GATEWAY_ROLES:
-        threading.Thread(target=gateway, args=(role,), daemon=True).start()
+    for role, arn in GATEWAY_ROLES.items():
+        if arn:
+            threading.Thread(target=gateway, args=(role,), daemon=True).start()
 
 
 def _gateway(role):
@@ -272,13 +281,14 @@ def _gateway(role):
     return _gateways[role]
 
 
-def call_tool(role, name, **args):
-    """Call one Gateway tool as `role`. actor_id and guest_verified come from the verified session, never from the
-    model: the model-facing tools don't even have those parameters. Returns the tool's JSON, or {"error": ...}."""
+def call_tool(role, name, target=GATEWAY_TARGET, **args):
+    """Call one Gateway tool as `role` on `target`. actor_id and guest_verified come from the verified session, never
+    from the model: the model-facing tools don't even have those parameters. Returns the tool's JSON, or {"error": ...}."""
     args = {k: v for k, v in args.items() if v is not None and v != ""}
-    if name in ACTOR_TOOLS:
+    if target == GATEWAY_TARGET and name in ACTOR_TOOLS:
         args.update(actor_id=S["actor_id"], guest_verified=bool(S.get("guest_verified")))
-    r = gateway(role).call_tool_sync(f"{name}-{time.time_ns()}", f"{GATEWAY_TARGET}___{name}", args)
+    role = GATEWAY_IDENTITY.get(role, role)
+    r = gateway(role).call_tool_sync(f"{name}-{time.time_ns()}", f"{target}___{name}", args)
     text = "".join(c.get("text", "") for c in r["content"])
     if r["status"] == "error":
         return {"error": text or "gateway call failed"}
