@@ -10,22 +10,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agents"))
 import common  # noqa: E402
 
-marios_order = common.history("cust_marios")[0]["order_id"]
+marios_order = json.loads(common.HISTORY.read_text())["cust_marios"][0]["order_id"]
 SEARCH_DATE = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+# Tools whose Lambda checks order ownership take actor_id; writes also take guest_verified (Cedar reads it). The agents
+# fill both from their session (common.SessionContext); this script passes them explicitly, like any direct client.
+ACTOR_TOOLS = {"get_order", "list_orders", "change_options", "bag_options", *common.WRITE_TOOLS}
 
 
 def call(role, actor, name, verified=True, **args):
-    common.start(actor, "policy-check")
-    common.S["guest_verified"] = verified
-    return common.call_tool(role, name, **args)
+    if name in ACTOR_TOOLS:
+        args["actor_id"] = actor
+    if name in common.WRITE_TOOLS:
+        args["guest_verified"] = verified
+    return common.gateway_call(role, name, args)
 
 
 def denied(r):
     return isinstance(r, dict) and "error" in r
 
 
-common.start("cust_marios", "policy-check")
-offer = common.call_tool("desk", "search_flights", origin="ATH", destination="LHR", departure_date=SEARCH_DATE)[0]
+offer = call("desk", "cust_marios", "search_flights", origin="ATH", destination="LHR", departure_date=SEARCH_DATE)[0]
 
 results = [
     (
@@ -62,8 +66,7 @@ results = [
 
 
 def intel(role, name, **args):
-    common.start("cust_marios", "policy-check")
-    return common.call_tool(role, name, target="TripIntel", **args)
+    return common.gateway_call(role, name, args)
 
 
 results += [

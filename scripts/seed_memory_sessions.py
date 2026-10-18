@@ -10,11 +10,42 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agents"))
-import common  # noqa: E402  (loads .env, MEMORY_ID, namespaces, memory_records)
+import common, traveler_profile as tp  # noqa: E402  (loads .env, MEMORY_ID; the desk's memory namespaces)
 from bedrock_agentcore.memory import MemoryClient  # noqa: E402
 
 PERSONAS = {k: v for k, v in json.loads((ROOT / "evals/ground_truth/personas.json").read_text()).items() if k[0] != "_"}
 SESSIONS = 12
+KINDS = ("preferences", "facts", "summaries")  # same order as traveler_profile.namespaces
+
+
+def namespaces(actor):
+    """kind -> (namespace or subtree path, retrieve kwarg), from the namespaces the desk recalls from."""
+    out = {}
+    for kind, ns in zip(KINDS, tp.namespaces(actor)):
+        key = "namespace_path" if "namespace_path" in ns else "namespace"
+        out[kind] = (ns[key], key)
+    return out
+
+
+def memory_records(actor, limit=200):
+    """Every long term record of one actor per strategy. A listing, not a search: recall is measured over all records,
+    which the agents' semantic recall (Strands MemoryManager) deliberately never returns."""
+    import boto3
+
+    c = boto3.client("bedrock-agentcore", region_name=common.REGION)
+    out = {}
+    for kind, (path, _) in namespaces(actor).items():
+        recs, token = [], None
+        while len(recs) < limit:
+            # namespacePath: per session summary namespaces are only reachable as a subtree.
+            r = c.list_memory_records(
+                memoryId=common.MEMORY_ID, namespacePath=path, maxResults=100, **({"nextToken": token} if token else {})
+            )
+            recs += [x for x in r.get("memoryRecordSummaries", []) if all(n.startswith(path) for n in x["namespaces"])]
+            if not (token := r.get("nextToken")):
+                break
+        out[kind] = [x["content"]["text"] for x in recs[:limit]]
+    return out
 
 
 def matches(text, groups):
@@ -62,7 +93,7 @@ def recall():
     """Per actor: (overall recall, missing fact ids, record count, per strategy 'found/total')."""
     out = {}
     for actor, facts in PERSONAS.items():
-        recs = common.memory_records(actor, limit=200)
+        recs = memory_records(actor)
         texts = [x for v in recs.values() for x in v]
         found = [f["id"] for f in facts if any(matches(x, f["match"]) for x in texts)]
         per_kind = {
@@ -76,15 +107,15 @@ def isolation(client):
     """Other actors' persona facts must never surface in an actor's namespaces, by listing or by semantic search."""
     leaks = []
     for actor in PERSONAS:
-        ns = common.namespaces(actor)
-        listed = [x for recs in common.memory_records(actor, limit=200).values() for x in recs]
+        ns = namespaces(actor)
+        listed = [x for recs in memory_records(actor).values() for x in recs]
         for other, facts in PERSONAS.items():
             if other == actor:
                 continue
             for f in facts:
                 hits = [x for x in listed if matches(x, f["match"])]
-                for kind, path in ns.items():
-                    kw = {"namespace_path": path} if kind == "summaries" else {"namespace": path}
+                for path, key in ns.values():
+                    kw = {key: path}
                     for r in client.retrieve_memories(common.MEMORY_ID, query=f["statement"], top_k=3, **kw):
                         if matches(r["content"]["text"], f["match"]):
                             hits.append(r["content"]["text"])

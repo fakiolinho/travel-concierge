@@ -90,7 +90,7 @@
           "toolDefinitions": [
             {
               "name": "search_flights",
-              "description": "Search Duffel Airways offers; returns the 3 cheapest, normalized.",
+              "description": "Search flight offers. Returns the 3 cheapest offers.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -124,7 +124,7 @@
             },
             {
               "name": "get_order",
-              "description": "One order of the traveler, normalized.",
+              "description": "Live status and details of one of the traveler's orders.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -142,7 +142,7 @@
             },
             {
               "name": "list_orders",
-              "description": "All orders of the traveler, normalized.",
+              "description": "Live status of all of the verified traveler's orders.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -156,7 +156,7 @@
             },
             {
               "name": "seat_map",
-              "description": "Available seats with prices for an offer.",
+              "description": "Available seats with prices for a flight offer, one entry per segment.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -170,7 +170,7 @@
             },
             {
               "name": "change_options",
-              "description": "Priced options to move one slice of an order to a new date. Read only.",
+              "description": "Priced options to move one slice of an order to a new date. Read only, nothing is changed.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -196,7 +196,7 @@
             },
             {
               "name": "bag_options",
-              "description": "Extra baggage that can be added to an order. Read only.",
+              "description": "Extra baggage that can be added to an order, with prices. Read only.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -214,7 +214,7 @@
             },
             {
               "name": "book_offer",
-              "description": "WRITE. confirm=false: live price quote for booking an offer for the traveler (one passenger). confirm=true: book it. Passenger details come from the traveler's own past booking.",
+              "description": "WRITE. Book a flight offer from search_flights for the verified traveler (one passenger). The traveler hears the live price quote and must say yes before it books. Passenger details come from the traveler's own past booking.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -240,7 +240,7 @@
             },
             {
               "name": "change_order",
-              "description": "WRITE. Without quote_id: quote moving the order to a change offer. With quote_id: confirm that quote.",
+              "description": "WRITE. Move an order to a change offer from change_options. The traveler hears the quote and must say yes before it runs.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -270,7 +270,7 @@
             },
             {
               "name": "cancel_order",
-              "description": "WRITE. Without quote_id: refund quote. With quote_id: confirm that cancellation.",
+              "description": "WRITE. Cancel an order. The traveler hears the refund quote and must say yes before it runs.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -296,7 +296,7 @@
             },
             {
               "name": "add_bag",
-              "description": "WRITE. confirm=false: price quote for adding a bag service. confirm=true: add it and pay.",
+              "description": "WRITE. Add a bag service from bag_options to an order. The traveler hears the price and must say yes before it runs.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -357,7 +357,7 @@
           "toolDefinitions": [
             {
               "name": "airport_weather",
-              "description": "Current METAR at an airport, normalized, with flight category and disruption risk signals.",
+              "description": "Current weather observation (METAR) at an airport: flight category, wind, gusts, visibility, ceiling, weather, plus risk level and the signals behind it.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -371,7 +371,7 @@
             },
             {
               "name": "airport_forecast",
-              "description": "TAF at an airport (next 24 to 30 hours), period by period with risk.",
+              "description": "Official terminal forecast (TAF) at an airport, usually the next 24 to 30 hours, period by period with risk.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -385,7 +385,7 @@
             },
             {
               "name": "destination_forecast",
-              "description": "Open-Meteo daily forecast at an airport's location, today to 15 days ahead.",
+              "description": "Daily weather forecast at an airport's location for one local date, today to 15 days ahead. Further out it returns available=false and the date the forecast becomes available.",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -403,7 +403,7 @@
             },
             {
               "name": "public_holidays",
-              "description": "Public holidays in the airport's country between two dates.",
+              "description": "Public holidays in the airport's country between two dates (busy travel days).",
               "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -425,13 +425,13 @@
             },
             {
               "name": "fx_convert",
-              "description": "Convert an amount with the latest ECB reference rate (Frankfurter), indicative.",
+              "description": "Convert an amount from a tool result into another currency with the latest ECB reference rate (indicative).",
               "inputSchema": {
                 "type": "object",
                 "properties": {
                   "amount": {
                     "type": "string",
-                    "description": "decimal amount as a string"
+                    "description": "the amount exactly as a tool returned it, e.g. \"402.26\""
                   },
                   "from_currency": {
                     "type": "string",
@@ -493,7 +493,7 @@
         },
         {
           "name": "writes",
-          "statement": "// Writes: only the Flight Ops identity, and only for a caller who passed identity verification this session.\n// The confirmation turn (\"yes\" in a later message) is enforced in agent code (common.gated): Cedar cannot see turns.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___book_offer\",\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\" &&\n  context.input.guest_verified == true\n};\n",
+          "statement": "// Writes: only the Flight Ops identity, and only for a caller who passed identity verification this session.\n// The confirmation turn (\"yes\" in a later message) is enforced in agent code by a Strands interrupt\n// (common.WriteGate): Cedar cannot see turns.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___book_offer\",\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\" &&\n  context.input.guest_verified == true\n};\n",
           "sourceFile": "policies/writes.cedar",
           "validationMode": "FAIL_ON_ANY_FINDINGS",
           "enforcementMode": "ACTIVE",
