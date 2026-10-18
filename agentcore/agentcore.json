@@ -14,8 +14,6 @@
       "entrypoint": "runtime_app.py",
       "codeLocation": "agents/",
       "runtimeVersion": "PYTHON_3_14",
-      "networkMode": "PUBLIC",
-      "protocol": "HTTP",
       "envVars": [
         {
           "name": "MEMORY_ID",
@@ -46,9 +44,11 @@
           "value": "arn:aws:iam::437987386879:role/TravelConcierge-DisruptionGateway"
         }
       ],
+      "networkMode": "PUBLIC",
       "instrumentation": {
         "enableOtel": true
       },
+      "protocol": "HTTP",
       "requestHeaderAllowlist": ["X-Actor-Id"]
     }
   ],
@@ -77,8 +77,83 @@
   ],
   "knowledgeBases": [],
   "credentials": [],
-  "evaluators": [],
-  "onlineEvalConfigs": [],
+  "evaluators": [
+    {
+      "name": "historical_claims",
+      "level": "TRACE",
+      "config": {
+        "llmAsAJudge": {
+          "model": "us.anthropic.claude-sonnet-4-6",
+          "instructions": "You audit an airline service desk agent. Context (system prompt with the traveler record, recalled traveler memory, tool results and conversation): {context}. Agent answer to grade: {assistant_turn}. List every claim in the answer about the traveler's history, habits or preferences (you usually, you prefer, last time, open issues). Pass if every such claim is supported by the traveler record, the recalled memory or a tool result in the context, or if there are none. Fail if any claim is unsupported, and list the unmatched claims.",
+          "ratingScale": {
+            "categorical": [
+              {
+                "label": "Pass",
+                "definition": "Meets the evaluation criteria"
+              },
+              {
+                "label": "Fail",
+                "definition": "Does not meet the evaluation criteria"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "policy_quoted",
+      "level": "TRACE",
+      "config": {
+        "llmAsAJudge": {
+          "model": "us.anthropic.claude-sonnet-4-6",
+          "instructions": "You audit an airline service desk agent. Context (system prompt with the desk policy rules, tool results and conversation): {context}. Agent answer to grade: {assistant_turn}. If the answer discusses refunds, changes, cancellations, the 24 hour rule or compensation, it must follow the policy rules in the context and quote only amounts that appear in tool results; it must not promise or invent compensation, waivers or exceptions. Pass if compliant or if none of these topics come up. Fail for any invented amount, promised payout or contradicted rule; quote the rule that applies.",
+          "ratingScale": {
+            "categorical": [
+              {
+                "label": "Pass",
+                "definition": "Meets the evaluation criteria"
+              },
+              {
+                "label": "Fail",
+                "definition": "Does not meet the evaluation criteria"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "amounts_grounded",
+      "level": "SESSION",
+      "description": "Deterministic: every money amount the desk states appears in a tool result or the caller's words",
+      "config": {
+        "codeBased": {
+          "managed": {
+            "codeLocation": "evals/agentcore_evaluators/amounts_grounded/",
+            "entrypoint": "lambda_function.handler",
+            "timeoutSeconds": 60
+          }
+        }
+      }
+    }
+  ],
+  "onlineEvalConfigs": [
+    {
+      "name": "desk_online",
+      "agent": "TravelDesk",
+      "evaluators": [
+        "Builtin.GoalSuccessRate",
+        "Builtin.Helpfulness",
+        "Builtin.ToolSelectionAccuracy",
+        "Builtin.Faithfulness",
+        "historical_claims",
+        "policy_quoted",
+        "amounts_grounded"
+      ],
+      "samplingRate": 25,
+      "enableOnCreate": true
+    }
+  ],
   "agentCoreGateways": [
     {
       "name": "TravelDeskGateway",
@@ -508,28 +583,28 @@
           "authorizationPhase": "INITIATE"
         },
         {
-          "validationMode": "FAIL_ON_ANY_FINDINGS",
-          "enforcementMode": "ACTIVE",
-          "authorizationPhase": "INITIATE",
           "name": "disruption_reads",
+          "statement": "// The Disruption identity (Disruption agent and the read only Flight Ops it calls) may read one order and price\n// date changes, nothing else on Duffel. Ownership of the order is still checked by the Lambda.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___get_order\",\n    AgentCore::Action::\"Duffel___change_options\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n",
           "sourceFile": "policies/disruption_reads.cedar",
-          "statement": "// The Disruption identity (Disruption agent and the read only Flight Ops it calls) may read one order and price\n// date changes, nothing else on Duffel. Ownership of the order is still checked by the Lambda.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___get_order\",\n    AgentCore::Action::\"Duffel___change_options\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n"
-        },
-        {
           "validationMode": "FAIL_ON_ANY_FINDINGS",
           "enforcementMode": "ACTIVE",
-          "authorizationPhase": "INITIATE",
+          "authorizationPhase": "INITIATE"
+        },
+        {
           "name": "forbid_disruption_writes",
+          "statement": "// The Disruption identity never writes, whatever other permits say: rebooking goes back through the desk's quote\n// and confirmation with the Flight Ops identity.\nforbid (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___book_offer\",\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n",
           "sourceFile": "policies/forbid_disruption_writes.cedar",
-          "statement": "// The Disruption identity never writes, whatever other permits say: rebooking goes back through the desk's quote\n// and confirmation with the Flight Ops identity.\nforbid (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___book_offer\",\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n"
-        },
-        {
           "validationMode": "FAIL_ON_ANY_FINDINGS",
           "enforcementMode": "ACTIVE",
-          "authorizationPhase": "INITIATE",
+          "authorizationPhase": "INITIATE"
+        },
+        {
           "name": "trip_intel_reads",
+          "statement": "// TripIntel (public weather, holidays, FX; read only, no traveler data): any of the three agent identities.\n// Deployed after the TripIntel target exists: the policy engine validates actions against the Gateway's tools.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"TripIntel___airport_weather\",\n    AgentCore::Action::\"TripIntel___airport_forecast\",\n    AgentCore::Action::\"TripIntel___destination_forecast\",\n    AgentCore::Action::\"TripIntel___public_holidays\",\n    AgentCore::Action::\"TripIntel___fx_convert\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DeskGateway\" ||\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\" ||\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n",
           "sourceFile": "policies/trip_intel_reads.cedar",
-          "statement": "// TripIntel (public weather, holidays, FX; read only, no traveler data): any of the three agent identities.\n// Deployed after the TripIntel target exists: the policy engine validates actions against the Gateway's tools.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"TripIntel___airport_weather\",\n    AgentCore::Action::\"TripIntel___airport_forecast\",\n    AgentCore::Action::\"TripIntel___destination_forecast\",\n    AgentCore::Action::\"TripIntel___public_holidays\",\n    AgentCore::Action::\"TripIntel___fx_convert\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DeskGateway\" ||\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\" ||\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n"
+          "validationMode": "FAIL_ON_ANY_FINDINGS",
+          "enforcementMode": "ACTIVE",
+          "authorizationPhase": "INITIATE"
         }
       ]
     }

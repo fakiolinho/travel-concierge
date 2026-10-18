@@ -10,6 +10,7 @@ import {
 } from '@aws/agentcore-cdk';
 import { CfnOutput, Duration, Stack, type StackProps } from 'aws-cdk-lib';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
@@ -243,6 +244,111 @@ export class AgentCoreStack extends Stack {
     }
     new CfnOutput(this, 'GuardrailIdOutput', { value: guardrail.attrGuardrailId });
     new CfnOutput(this, 'GuardrailVersionOutput', { value: guardrailVersion.attrVersion });
+
+    // Travel Concierge: evals and guardrails dashboard (PLAN.md step 6). Offline eval runs publish to
+    // TravelConcierge/Evals (evals/run_offline.py --cloudwatch); online evaluation results land in
+    // /aws/bedrock-agentcore/evaluations/results/*. SEARCH expressions keep the widgets free of resource ids.
+    const search = (expr: string, stat: string, period: number, label: string) =>
+      new cloudwatch.MathExpression({
+        expression: `SEARCH('${expr}', '${stat}', ${period})`,
+        label,
+        period: Duration.seconds(period),
+      });
+    const day = 86400;
+    new cloudwatch.Dashboard(this, 'TravelConciergeEvalsDashboard', {
+      dashboardName: 'TravelConcierge-Evals',
+      defaultInterval: Duration.days(14),
+      widgets: [
+        [
+          new cloudwatch.TextWidget({
+            markdown:
+              '## Travel Concierge evals\nOffline runs: `uv run --group evals python evals/run_offline.py --suite dataset ' +
+              '--judges --agentcore --decider --cloudwatch`. Online evaluation (`desk_online`, 25% of Runtime sessions) ' +
+              'scores live traffic; see Bedrock AgentCore → Evaluations. Traces: CloudWatch → GenAI Observability.',
+            width: 24,
+            height: 2,
+          }),
+        ],
+        [
+          new cloudwatch.GraphWidget({
+            title: 'Deterministic gate pass rate per suite (offline)',
+            left: [search('{TravelConcierge/Evals,Suite} MetricName="GatePass"', 'Average', day, '')],
+            leftYAxis: { min: 0, max: 1 },
+            width: 8,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'Gate pass rate per category (offline)',
+            left: [search('{TravelConcierge/Evals,Category,Suite} MetricName="GatePass"', 'Average', day, '')],
+            leftYAxis: { min: 0, max: 1 },
+            width: 8,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'Judge scores (Strands Evals + AgentCore, offline)',
+            left: [search('{TravelConcierge/Evals,Evaluator,Suite} MetricName="JudgeScore"', 'Average', day, '')],
+            leftYAxis: { min: 0, max: 1 },
+            width: 8,
+          }),
+        ],
+        [
+          new cloudwatch.GraphWidget({
+            title: 'Turn latency p50 / p90 per category (offline, s)',
+            left: [
+              search('{TravelConcierge/Evals,Category,Suite} MetricName="TurnSeconds"', 'p50', day, 'p50'),
+              search('{TravelConcierge/Evals,Category,Suite} MetricName="TurnSeconds"', 'p90', day, 'p90'),
+            ],
+            width: 8,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'Runtime invocation latency p50 / p90 (ms)',
+            left: [
+              search('{AWS/Bedrock-AgentCore,Name,Operation,Resource} MetricName="Latency" Operation="InvokeAgentRuntime"', 'p50', 3600, 'p50'),
+              search('{AWS/Bedrock-AgentCore,Name,Operation,Resource} MetricName="Latency" Operation="InvokeAgentRuntime"', 'p90', 3600, 'p90'),
+            ],
+            width: 8,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'Strands Decider 2B: mean P(yes) per gate question',
+            left: [search('{TravelConcierge/Evals,Question,Suite} MetricName="DeciderPYes"', 'Average', day, '')],
+            leftYAxis: { min: 0, max: 1 },
+            width: 8,
+          }),
+        ],
+        [
+          new cloudwatch.GraphWidget({
+            title: 'Cedar deny decisions per policy (Gateway)',
+            left: [search('{AWS/Bedrock-AgentCore,Mode,OperationName,Policy,TargetResource} MetricName="DenyDecisions"', 'Sum', 3600, '')],
+            width: 8,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'Guardrail interventions (input / output)',
+            left: [search('{AWS/Bedrock/Guardrails,GuardrailContentSource,Operation} MetricName="InvocationsIntervened"', 'Sum', 3600, '')],
+            width: 8,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'Errors: Runtime, Gateway, Lambdas',
+            left: [
+              search('{AWS/Bedrock-AgentCore,Name,Operation,Resource} MetricName="Errors" Operation="InvokeAgentRuntime"', 'Sum', 3600, ''),
+              search('{AWS/Bedrock-AgentCore,Method,Operation,Protocol,Resource} MetricName="SystemErrors"', 'Sum', 3600, ''),
+              search('{AWS/Lambda,FunctionName} MetricName="Errors" FunctionName="TravelConcierge-"', 'Sum', 3600, ''),
+            ],
+            width: 8,
+          }),
+        ],
+        [
+          new cloudwatch.LogQueryWidget({
+            title: 'Latest evaluation results (Strands Evals offline runs)',
+            logGroupNames: ['/aws/bedrock-agentcore/evaluations/results/travel-concierge'],
+            queryLines: [
+              'fields @timestamp, `gen_ai.evaluation.name`, `gen_ai.evaluation.score.value`, `gen_ai.evaluation.score.label`, `session.id`',
+              'sort @timestamp desc',
+              'limit 50',
+            ],
+            width: 24,
+            height: 6,
+          }),
+        ],
+      ],
+    });
 
     // Create payment infrastructure via CFN constructs
     if (paymentSpec && paymentSpec.length > 0) {

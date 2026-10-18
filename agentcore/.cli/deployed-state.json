@@ -32,6 +32,27 @@
             }
           }
         },
+        "evaluators": {
+          "historical_claims": {
+            "evaluatorId": "TravelConcierge_historical_claims-Gl133Q6Rkv",
+            "evaluatorArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:evaluator/TravelConcierge_historical_claims-Gl133Q6Rkv"
+          },
+          "policy_quoted": {
+            "evaluatorId": "TravelConcierge_policy_quoted-CNrRr77mKd",
+            "evaluatorArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:evaluator/TravelConcierge_policy_quoted-CNrRr77mKd"
+          },
+          "amounts_grounded": {
+            "evaluatorId": "TravelConcierge_amounts_grounded-0JKj4aHbAs",
+            "evaluatorArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:evaluator/TravelConcierge_amounts_grounded-0JKj4aHbAs"
+          }
+        },
+        "onlineEvalConfigs": {
+          "desk_online": {
+            "onlineEvaluationConfigId": "TravelConcierge_desk_online-eFruSwFotM",
+            "onlineEvaluationConfigArn": "arn:aws:bedrock-agentcore:us-east-1:437987386879:online-evaluation-config/TravelConcierge_desk_online-eFruSwFotM",
+            "agent": "TravelDesk"
+          }
+        },
         "policyEngines": {
           "TravelDeskPolicies": {
             "policyEngineId": "TravelConcierge_TravelDeskPolicies-i0o6fmoi7w",
@@ -71,7 +92,7 @@
           }
         },
         "stackName": "AgentCore-TravelConcierge-default",
-        "deployHash": "1c084a1e5f336774"
+        "deployHash": "cc25c3670e967eab"
       }
     }
   }
