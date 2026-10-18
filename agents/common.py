@@ -1,22 +1,22 @@
-"""Shared bits for the local run: agent factory, tracing setup, session state, fixture history, answer cache,
-write confirmation gate."""
+"""Shared bits: agent factory, tracing setup, Gateway tools, the interventions every agent runs, answer cache.
+
+Per session data (verified actor, session id) lives in each agent's Strands state (`Agent(state=...)`), read by the
+interventions below from `event.agent.state`. No module level session dict.
+"""
 
 import datetime as dt, hashlib, json, logging, os, re, sys, threading, time
 from pathlib import Path
 
+from dotenv import load_dotenv
 from strands import Agent
+from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookProvider
+from strands.interventions import Confirm, Deny, InterventionHandler, Proceed, Transform
 from strands.models import BedrockModel
 from strands.models.model import CacheConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # agents run as scripts; this lets them `from tools import duffel`
-
-# ponytail: minimal KEY=VALUE .env reader (no quotes/escapes). Upgrade: Secrets Manager behind Lambdas in step 4.
-if (ROOT / ".env").exists():
-    for line in (ROOT / ".env").read_text().splitlines():
-        k, sep, v = line.partition("=")
-        if sep and not k.lstrip().startswith("#"):
-            os.environ.setdefault(k.strip(), v.strip())
+load_dotenv(ROOT / ".env")
 
 # The desk holds the conversation and the reads; Flight Ops makes the writes. The Disruption agent (and the read only
 # Flight Ops it calls) run on Haiku 5.5: their judgement rests on risk signals computed in code, and Strands
@@ -29,10 +29,9 @@ MODELS = {
     "flight_ops_read": "us.anthropic.claude-haiku-5-5",
 }
 MODELS = {role: os.environ.get(f"MODEL_ID_{role.upper()}", m) for role, m in MODELS.items()}
+REGION = os.environ.get("AWS_REGION", "us-east-1")
 HISTORY = ROOT / "evals/fixtures/history.json"
 MEMORY_ID = os.environ.get("MEMORY_ID", "")  # empty = run without AgentCore Memory
-
-
 GUARDRAIL = {"id": os.environ.get("GUARDRAIL_ID", ""), "version": os.environ.get("GUARDRAIL_VERSION", "")}
 
 
@@ -51,12 +50,7 @@ def model(role):
             guardrail_latest_message=True,
             guardrail_trace="enabled",
         )
-    return BedrockModel(
-        model_id=MODELS[role],
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        cache_config=CacheConfig(strategy="auto"),
-        **guard,
-    )
+    return BedrockModel(model_id=MODELS[role], region_name=REGION, cache_config=CacheConfig(strategy="auto"), **guard)
 
 
 LOG_DIR = ROOT / "logs"
@@ -65,7 +59,7 @@ LOG_DIR = ROOT / "logs"
 def setup_tracing():
     """Strands' built in OpenTelemetry tracing, exported as one JSON span per line to logs/traces-YYYY-MM-DD.jsonl.
     Spans cover every agent run, event loop cycle, model call and tool call, with start/end timestamps, parent ids
-    (specialist spans nest under the desk tool span that called them), token usage, and inputs/outputs."""
+    (sub agent spans nest under the desk tool span that called them), token usage, and inputs/outputs."""
     from strands.telemetry import StrandsTelemetry
 
     # ponytail: local file with unredacted conversation text. Upgrade: AgentCore Observability (CloudWatch) in
@@ -92,83 +86,244 @@ def setup_tracing():
     return path
 
 
-def agent(role, **kw):
-    """Every agent is built here: named (span names), tagged with session and actor (span attributes), and only
-    the desk streams to stdout."""
+def session_state(actor_id, session_id):
+    """What every agent of one call carries in its Strands state: the verified traveler and the session."""
+    return {"actor_id": actor_id, "session_id": session_id or "", "guest_verified": True}
+
+
+def agent(role, state, interventions=(), hooks=(), **kw):
+    """Every agent is built here: named (span names), tagged with session and actor (span attributes), carrying the
+    session in its Strands state, and running SessionContext first. Only the desk streams to stdout."""
     if role != "desk":
         kw.setdefault("callback_handler", None)
     # session.id and user.id are OpenInference keys: Phoenix groups spans into sessions and filters by user on them.
-    actor = S.get("actor_id") or ""
-    attrs = {"session.id": S.get("session_id") or "", "user.id": actor, "actor.id": actor, "agent.role": role}
-    return Agent(name=role, model=model(role), trace_attributes=attrs, **kw)
-
-
-def namespaces(actor_id):
-    """Memory namespaces of one actor, matching agentcore/agentcore.json. The trailing slash keeps cust_a from matching cust_ab."""
-    return {
-        "preferences": f"/users/{actor_id}/preferences/",
-        "facts": f"/users/{actor_id}/facts/",
-        "summaries": f"/summaries/{actor_id}/",
-    }
-
-
-def memory_records(actor_id, limit=50):
-    """Long term records of one actor, newest first, grouped by strategy."""
-    import boto3
-
-    # ponytail: list every record by namespace prefix, no semantic search. Upgrade: retrieve_memory_records with the
-    # desk's question as query once an actor has more records than fit in a prompt.
-    c = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION", "us-east-1"))
-    out = {}
-    for kind, ns in namespaces(actor_id).items():
-        recs, token = [], None
-        while len(recs) < limit:
-            # namespacePath, not namespace: in practice `namespace` only matches exactly, so per session summary
-            # namespaces (/summaries/{actor}/{session}/) are only reachable hierarchically.
-            r = c.list_memory_records(
-                memoryId=MEMORY_ID, namespacePath=ns, maxResults=100, **({"nextToken": token} if token else {})
-            )
-            # belt and braces: drop anything whose namespace is not under this actor's prefix
-            recs += [
-                x
-                for x in r.get("memoryRecordSummaries", [])
-                if all(n.startswith(ns) for n in x.get("namespaces", [ns]))
-            ]
-            if not (token := r.get("nextToken")):
-                break
-        recs.sort(key=lambda x: x.get("createdAt") or 0, reverse=True)
-        out[kind] = [x["content"]["text"] for x in recs[:limit]]
-    return out
-
-
-# ponytail: one in-process session dict, single caller. Upgrade: Runtime session + AgentCore Memory (step 3).
-S = {}
-
-
-def start(actor_id, session_id=None):
-    S.clear()
-    S.update(
-        actor_id=actor_id,
-        session_id=session_id,
-        guest_verified=True,
-        turn=0,
-        last_user="",
-        pending={},
+    actor = state["actor_id"]
+    attrs = {"session.id": state["session_id"], "user.id": actor, "actor.id": actor, "agent.role": role}
+    return Agent(
+        name=role,
+        model=model(role),
+        trace_attributes=attrs,
+        state=dict(state),
+        interventions=[SessionContext(), *interventions],
+        hooks=list(hooks),
+        **kw,
     )
 
 
-def user_turn(text):
-    S["turn"] += 1
-    S["last_user"] = text
-    # per turn: write tools touched / executed, earliest offer expiry seen
-    S.update(touched_write=False, wrote=False, expires=None)
+# AgentCore Gateway: every external tool is a Gateway call over MCP. Each agent signs with its own IAM role, so Cedar
+# sees who is calling (desk: reads only; Flight Ops: reads and writes; Disruption: reads only). Order ownership is
+# checked by the Lambda.
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "")
+GATEWAY_ROLES = {
+    "desk": os.environ.get("GATEWAY_ROLE_DESK", ""),
+    "flight_ops": os.environ.get("GATEWAY_ROLE_FLIGHT_OPS", ""),
+    "disruption": os.environ.get("GATEWAY_ROLE_DISRUPTION", ""),  # reads only, Cedar forbids every write
+}
+WRITE_TOOLS = {"book_offer", "change_order", "cancel_order", "add_bag"}
+TRIP_INTEL_TOOLS = {"airport_weather", "airport_forecast", "destination_forecast", "public_holidays", "fx_convert"}
+# Filled from the verified session by SessionContext / WriteGate, never by the model: hidden from the tool specs the
+# model sees (the Gateway schemas keep them, they are the Lambda's contract and Cedar reads guest_verified).
+SYSTEM_FIELDS = {"actor_id", "guest_verified", "confirm", "quote_id"}
+_gateways = {}
+_gateway_lock = threading.Lock()
+_system_fields = {}  # leaf tool name -> the SYSTEM_FIELDS its Gateway schema takes
 
 
-def note_expiry(offers):
-    for o in offers:
-        if o.get("expires_at"):
-            t = dt.datetime.fromisoformat(o["expires_at"]).timestamp()
-            S["expires"] = min(S["expires"] or t, t)
+def gateway(identity):
+    """One MCP client per Gateway identity, SigV4 signed with that IAM role. Credentials come from botocore's own
+    assume role fetcher and refresh before they expire, so long sessions keep working."""
+    with _gateway_lock:
+        if identity not in _gateways:
+            import atexit, boto3
+            from botocore.credentials import AssumeRoleCredentialFetcher, DeferredRefreshableCredentials
+            from mcp_proxy_for_aws.client import aws_iam_streamablehttp_client
+            from strands.tools.mcp import MCPClient
+
+            assert GATEWAY_URL and GATEWAY_ROLES[identity], "set GATEWAY_URL and GATEWAY_ROLE_* (see README, step 4)"
+            source = boto3.Session(region_name=REGION)
+            fetcher = AssumeRoleCredentialFetcher(
+                client_creator=source._session.create_client,
+                source_credentials=source.get_credentials(),
+                role_arn=GATEWAY_ROLES[identity],
+                extra_args={"RoleSessionName": f"travel-concierge-{identity}"},
+            )
+            creds = DeferredRefreshableCredentials(refresh_using=fetcher.fetch_credentials, method="assume-role")
+            client = MCPClient(
+                lambda: aws_iam_streamablehttp_client(GATEWAY_URL, "bedrock-agentcore", REGION, credentials=creds)
+            )
+            client.start()
+            atexit.register(client.stop, None, None, None)
+            # A Cedar denial is an expected outcome (returned to the agent as an error result), not a crash to log.
+            logging.getLogger("strands.tools.mcp.mcp_client").setLevel(logging.CRITICAL)
+            _gateways[identity] = client
+        return _gateways[identity]
+
+
+def warm_gateways(*identities):
+    """Open Gateway sessions in the background at session start (STS + MCP handshake), so no caller turn pays it."""
+    for identity in identities:
+        if GATEWAY_ROLES.get(identity):
+            threading.Thread(target=gateway, args=(identity,), daemon=True).start()
+
+
+def _listed(identity):
+    found = {t.mcp_tool.name.split("___", 1)[-1]: t.mcp_tool for t in gateway(identity).list_tools_sync()}
+    for name, t in found.items():
+        _system_fields[name] = set(t.inputSchema.get("properties", {})) & SYSTEM_FIELDS
+    return found
+
+
+def gateway_tools(identity, names):
+    """The Gateway's MCP tools for one identity, as Strands MCPAgentTools under their leaf names (`get_order`, not
+    `Duffel___get_order`) and without the SYSTEM_FIELDS in the schema the model sees."""
+    from strands.tools.mcp.mcp_agent_tool import MCPAgentTool
+
+    client = gateway(identity)
+    found = _listed(identity)
+    missing = set(names) - set(found)
+    assert not missing, f"Gateway does not list {sorted(missing)} for {identity} (Cedar or deploy)"
+    tools = []
+    for name in names:
+        t = found[name]
+        schema = dict(t.inputSchema)
+        schema["properties"] = {k: v for k, v in schema.get("properties", {}).items() if k not in SYSTEM_FIELDS}
+        schema["required"] = [k for k in schema.get("required", []) if k not in SYSTEM_FIELDS]
+        tools.append(MCPAgentTool(t.model_copy(update={"inputSchema": schema}), client, name_override=name))
+    return tools
+
+
+def gateway_call(identity, name, args):
+    """One direct Gateway call outside a model turn (the session's bookings record, write quotes, policy checks).
+    The caller passes every argument, actor_id included."""
+    full = f"{'TripIntel' if name in TRIP_INTEL_TOOLS else 'Duffel'}___{name}"
+    r = gateway(identity).call_tool_sync(f"{name}-{time.time_ns()}", full, args)
+    text = "".join(c.get("text", "") for c in r["content"])
+    if r["status"] == "error":
+        return {"error": text or "gateway call failed"}
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {"error": f"unexpected gateway response: {text[:200]}"}
+
+
+class SessionContext(InterventionHandler):
+    """Fills actor_id and guest_verified on every Gateway tool call from the agent's verified session state. Whatever
+    the model sent for them is overwritten, so a model cannot act for another traveler."""
+
+    name = "session-context"
+
+    def before_tool_call(self, event, **_):
+        props = _system_fields.get(event.tool_use["name"], set()) & {"actor_id", "guest_verified"}
+        if not props:
+            return Proceed()
+        s = event.agent.state
+
+        def apply(e):
+            e.tool_use["input"].update(
+                {
+                    k: v
+                    for k, v in (("actor_id", s.get("actor_id")), ("guest_verified", s.get("guest_verified")))
+                    if k in props
+                }
+            )
+
+        return Transform(apply=apply)
+
+
+AFFIRM = re.compile(r"^\W*(yes|yep|yeah|y|confirm(ed)?|go ahead|do it|proceed|please do|ok(ay)?|sure)\b", re.I)
+
+
+def affirmed(response):
+    """Strands Confirm evaluate: the caller's reply is an explicit yes."""
+    return response is True or (isinstance(response, str) and bool(AFFIRM.match(response)))
+
+
+def render_quote(action, quote):
+    """The confirmation question the caller hears, built only from the quote's own fields."""
+    label = {"book_offer": "Book", "change_order": "Change", "cancel_order": "Cancel", "add_bag": "Add bag to"}[action]
+    keys = ("order_id", "offer_id", "total", "change_total", "penalty", "refund_amount", "amount", "currency",
+            "refund_to", "quantity", "expires_at")  # fmt: skip
+    fields = ", ".join(f"{k.replace('_', ' ')} {quote[k]}" for k in keys if quote.get(k) not in (None, ""))
+    return f"{label}: {fields}. Do you want me to go ahead? Please answer yes or no."
+
+
+class WriteGate(InterventionHandler):
+    """Writes need an explicit yes in the caller's next message (Strands interrupt). The handler gets the quote from
+    the Gateway (the write tool without confirm/quote_id only quotes), pauses the agent with it (Confirm), and only an
+    affirmative resume lets the tool run, with the quote's id. The write therefore can never run in the turn it was
+    proposed: the agent stops at the interrupt and only the caller's next message resumes it.
+
+    The quote is kept in the agent's state under the tool use id, so the resumed call executes exactly the quote the
+    caller heard (a resume re-runs this handler for the same tool use)."""
+
+    name = "write-gate"
+
+    def __init__(self, identity):
+        self.identity = identity
+
+    def before_tool_call(self, event, **_):
+        name = event.tool_use["name"]
+        if name not in WRITE_TOOLS:
+            return Proceed()
+        s = event.agent.state
+        quotes = s.get("quotes") or {}
+        tid = event.tool_use["toolUseId"]
+        if tid not in quotes:
+            args = {k: v for k, v in event.tool_use["input"].items() if k not in {"confirm", "quote_id"}}
+            q = gateway_call(
+                self.identity, name, {**args, "confirm": False} if name in {"book_offer", "add_bag"} else args
+            )
+            if "error" in q:
+                return Deny(reason=q["error"])
+            quotes[tid] = q
+            s.set("quotes", quotes)
+        return Confirm(prompt=render_quote(name, quotes[tid]), evaluate=affirmed)
+
+
+class ExecuteConfirmed(InterventionHandler):
+    """Runs after WriteGate approved: turns the tool call into the execution of the confirmed quote."""
+
+    name = "execute-confirmed"
+
+    def before_tool_call(self, event, **_):
+        name = event.tool_use["name"]
+        if name not in WRITE_TOOLS:
+            return Proceed()
+        quote = (event.agent.state.get("quotes") or {})[event.tool_use["toolUseId"]]
+
+        def apply(e):
+            e.tool_use["input"].pop("quote_id", None)
+            e.tool_use["input"].update({"quote_id": quote["quote_id"]} if "quote_id" in quote else {"confirm": True})
+
+        return Transform(apply=apply)
+
+
+class TurnLog(HookProvider):
+    """Per caller turn facts the answer cache needs, collected from Strands tool events across all agents of a session:
+    did a write run or get proposed, and when does the earliest offer shown expire."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.touched_write, self.wrote, self.expires = False, False, None
+
+    def register_hooks(self, registry, **_):
+        registry.add_callback(BeforeToolCallEvent, self._before)
+        registry.add_callback(AfterToolCallEvent, self._after)
+
+    def _before(self, e):
+        self.touched_write |= e.tool_use["name"] in WRITE_TOOLS
+
+    def _after(self, e):
+        res = e.result or {}
+        if e.tool_use["name"] in WRITE_TOOLS and res.get("status") == "success":
+            self.wrote = True
+        if e.tool_use["name"] in {"search_flights", "change_options"}:
+            text = "".join(c.get("text", "") for c in res.get("content", []))
+            for t in re.findall(r'"expires_at":\s*"([^"]+)"', text):
+                t = dt.datetime.fromisoformat(t).timestamp()
+                self.expires = min(self.expires or t, t)
 
 
 # ponytail: answer cache in a local JSON file, one process. Upgrade: DynamoDB/ElastiCache with TTL in Runtime (step 4).
@@ -209,139 +364,38 @@ def cache_drop(actor_id):
         CACHE.write_text(json.dumps(_cache(drop_actor=actor_id)))
 
 
-def history(actor_id=None):
-    """Fixture orders for the verified actor only. There is deliberately no way to ask for another actor."""
-    if not HISTORY.exists():
-        raise FileNotFoundError(f"{HISTORY} missing; run scripts/seed_duffel_history.py first")
-    return json.loads(HISTORY.read_text()).get(actor_id or S["actor_id"], [])
-
-
-# AgentCore Gateway: every Duffel tool is a Gateway call. Each agent signs with its own IAM role, so Cedar sees
-# who is calling (desk: reads only; Flight Ops: reads and writes). Order ownership is checked by the Lambda.
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "")
-GATEWAY_ROLES = {
-    "desk": os.environ.get("GATEWAY_ROLE_DESK", ""),
-    "flight_ops": os.environ.get("GATEWAY_ROLE_FLIGHT_OPS", ""),
-    "disruption": os.environ.get("GATEWAY_ROLE_DISRUPTION", ""),  # reads only, Cedar forbids every write
-}
-# Agents that sign as another agent's identity: the read only Flight Ops inside the Disruption agent signs as
-# Disruption, so even a write tool there would be denied by Cedar, on top of it having no write tools at all.
-GATEWAY_IDENTITY = {"flight_ops_read": "disruption"}
-GATEWAY_TARGET = "Duffel"
-ACTOR_TOOLS = {
-    "get_order",
-    "list_orders",
-    "change_options",
-    "bag_options",
-    "book_offer",
-    "change_order",
-    "cancel_order",
-    "add_bag",
-}
-_gateways = {}
-_gateway_locks = {role: threading.Lock() for role in GATEWAY_ROLES}  # per role: warm both in parallel
-
-
-def gateway(role):
-    """One MCP session per agent role, signed with SigV4 as that role's assumed IAM identity."""
-    with _gateway_locks[role]:  # a background warm up and the first real call must not open two sessions
-        return _gateway(role)
-
-
-def warm_gateways():
-    """Open both Gateway sessions in the background at session start (STS + MCP handshake, about 1 to 3s each),
-    so no caller turn pays for it."""
-    for role, arn in GATEWAY_ROLES.items():
-        if arn:
-            threading.Thread(target=gateway, args=(role,), daemon=True).start()
-
-
-def _gateway(role):
-    if role not in _gateways:
-        import atexit, boto3
-        from botocore.credentials import Credentials
-        from mcp_proxy_for_aws.client import aws_iam_streamablehttp_client
-        from strands.tools.mcp import MCPClient
-
-        region = os.environ.get("AWS_REGION", "us-east-1")
-        assert GATEWAY_URL and GATEWAY_ROLES[role], "set GATEWAY_URL and GATEWAY_ROLE_* (see README, step 4)"
-        # ponytail: 1h STS credentials, not refreshed. Upgrade: botocore RefreshableCredentials for long sessions.
-        c = boto3.client("sts", region_name=region).assume_role(
-            RoleArn=GATEWAY_ROLES[role], RoleSessionName=f"{role}-{(S.get('session_id') or 'local')[-40:]}"
-        )["Credentials"]
-        creds = Credentials(c["AccessKeyId"], c["SecretAccessKey"], c["SessionToken"])
-        client = MCPClient(
-            lambda: aws_iam_streamablehttp_client(GATEWAY_URL, "bedrock-agentcore", region, credentials=creds)
-        )
-        client.start()
-        atexit.register(client.stop, None, None, None)
-        # A Cedar denial is an expected outcome (returned to the agent as an error result), not a crash to log.
-        logging.getLogger("strands.tools.mcp.mcp_client").setLevel(logging.CRITICAL)
-        _gateways[role] = client
-    return _gateways[role]
-
-
-def call_tool(role, name, target=GATEWAY_TARGET, **args):
-    """Call one Gateway tool as `role` on `target`. actor_id and guest_verified come from the verified session, never
-    from the model: the model-facing tools don't even have those parameters. Returns the tool's JSON, or {"error": ...}."""
-    args = {k: v for k, v in args.items() if v is not None and v != ""}
-    if target == GATEWAY_TARGET and name in ACTOR_TOOLS:
-        args.update(actor_id=S["actor_id"], guest_verified=bool(S.get("guest_verified")))
-    role = GATEWAY_IDENTITY.get(role, role)
-    r = gateway(role).call_tool_sync(f"{name}-{time.time_ns()}", f"{target}___{name}", args)
-    text = "".join(c.get("text", "") for c in r["content"])
-    if r["status"] == "error":
-        return {"error": text or "gateway call failed"}
-    try:
-        return json.loads(text)
-    except ValueError:
-        return {"error": f"unexpected gateway response: {text[:200]}"}
-
-
-# ponytail: regex "yes" detector. Upgrade: Strands Decider pre send gate + Cedar context.guest_verified (step 4).
-AFFIRM = re.compile(r"^\W*(yes|yep|yeah|y|confirm(ed)?|go ahead|do it|proceed|please do|ok(ay)?|sure)\b", re.I)
-
-
-def gated(action, key, quote, execute):
-    """Two phase write. The first call quotes and parks the action. It only executes on a call made in a
-    later user turn whose text is an explicit yes, so a write can never happen in the turn it was proposed."""
-    if not S.get("guest_verified"):
-        return {"error": "caller not verified"}
-    S["touched_write"] = True
-    k = (action, key)
-    p = S["pending"].get(k)
-    if p and p["turn"] < S["turn"] and AFFIRM.match(S["last_user"]):
-        del S["pending"][k]
-        r = execute(p["quote"])
-        S["wrote"] = "error" not in r
-        return r if "error" in r else {"status": "done", **r}
-    if not p or p["turn"] != S["turn"]:
-        q = quote()
-        if "error" in q:
-            return q
-        p = S["pending"][k] = {"turn": S["turn"], "quote": q}
-    return {
-        "status": "needs_confirmation",
-        "quote": p["quote"],
-        "next": "Read this quote to the traveler and ask for an explicit yes. Call again only after they confirm.",
-    }
-
-
 if __name__ == "__main__":
-    runs = []
-    q = lambda: {"refund": "10.00"}
-    x = lambda p: runs.append(p) or {"ok": True}
-    start("cust_a")
-    user_turn("cancel ord_1")
-    assert gated("cancel", "ord_1", q, x)["status"] == "needs_confirmation"
-    assert gated("cancel", "ord_1", q, x)["status"] == "needs_confirmation" and not runs, "same turn must not execute"
-    user_turn("hmm, what about tomorrow instead?")
-    assert gated("cancel", "ord_1", q, x)["status"] == "needs_confirmation" and not runs, "non yes must not execute"
-    user_turn("Yes, go ahead")
-    assert gated("cancel", "ord_1", q, x) == {"status": "done", "ok": True} and runs == [{"refund": "10.00"}]
-    assert gated("cancel", "ord_1", q, x)["status"] == "needs_confirmation" and len(runs) == 1, "pending is single use"
-    S["guest_verified"] = False
-    assert "error" in gated("cancel", "ord_1", q, x)
+    from types import SimpleNamespace as NS
+
+    from strands.agent.state import AgentState
+
+    assert affirmed("Yes, go ahead") and affirmed(True) and not affirmed("no") and not affirmed("what about friday?")
+    assert render_quote("cancel_order", {"quote_id": "x", "refund_amount": "10.00", "currency": "EUR"}) == (
+        "Cancel: refund amount 10.00, currency EUR. Do you want me to go ahead? Please answer yes or no."
+    )
+    # SessionContext overwrites what the model sent, only on tools that take the fields.
+    _system_fields["get_order"] = {"actor_id"}
+    assert isinstance(SessionContext().before_tool_call(NS(tool_use={"name": "search_flights"})), Proceed)
+    ev = NS(agent=NS(state=AgentState(session_state("cust_a", "s1"))),
+            tool_use={"name": "get_order", "toolUseId": "t1", "input": {"order_id": "o", "actor_id": "cust_b"}})  # fmt: skip
+    SessionContext().before_tool_call(ev).apply(ev)
+    assert ev.tool_use["input"] == {"order_id": "o", "actor_id": "cust_a"}, ev.tool_use["input"]
+    # ExecuteConfirmed runs the stored quote: quote_id for change/cancel, confirm for book/add bag, model values ignored.
+    st = AgentState({"quotes": {"t1": {"quote_id": "q1"}, "t2": {"total": "9"}}})
+    for name, tid, want in (("cancel_order", "t1", {"quote_id": "q1"}), ("book_offer", "t2", {"confirm": True})):
+        ev = NS(agent=NS(state=st), tool_use={"name": name, "toolUseId": tid, "input": {"quote_id": "evil"}})
+        ExecuteConfirmed().before_tool_call(ev).apply(ev)
+        assert ev.tool_use["input"] == want, ev.tool_use["input"]
+    assert isinstance(ExecuteConfirmed().before_tool_call(NS(tool_use={"name": "get_order"})), Proceed)
+    # TurnLog: earliest expiry, write flags.
+    log = TurnLog()
+    log._before(NS(tool_use={"name": "search_flights"}))
+    out = '[{"expires_at": "2026-10-18T10:00:00Z"}, {"expires_at": "2026-10-18T09:00:00Z"}]'
+    log._after(NS(tool_use={"name": "search_flights"}, result={"status": "success", "content": [{"text": out}]}))
+    assert log.expires == dt.datetime(2026, 10, 18, 9, tzinfo=dt.timezone.utc).timestamp() and not log.touched_write
+    log._before(NS(tool_use={"name": "cancel_order"}))
+    log._after(NS(tool_use={"name": "cancel_order"}, result={"status": "error", "content": []}))
+    assert log.touched_write and not log.wrote
 
     CACHE = Path(os.environ.get("TMPDIR", "/tmp")) / "travel_concierge_cache_check.json"
     CACHE.unlink(missing_ok=True)
@@ -356,8 +410,5 @@ if __name__ == "__main__":
     assert cache_get(k)["answer"] == "answer" and cache_get("cust_a:old") is None
     cache_drop("cust_a")
     assert cache_get(k) is None and cache_get("cust_b:x")["answer"] == "other", "drop is per traveler"
-    user_turn("x")
-    note_expiry([{"expires_at": "2026-10-18T10:00:00Z"}, {"expires_at": "2026-10-18T09:00:00Z"}, {}])
-    assert S["expires"] == dt.datetime(2026, 10, 18, 9, tzinfo=dt.timezone.utc).timestamp()
     CACHE.unlink()
     print("common: ok")

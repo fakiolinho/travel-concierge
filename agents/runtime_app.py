@@ -1,16 +1,17 @@
 """AgentCore Runtime entrypoint for the Travel Desk (deployed with `agentcore deploy`, invoked with `agentcore invoke`).
 
-AgentCore Runtime runs every session in its own microVM, so the module level session state (common.S) belongs to
-exactly one caller. Answers stream back as text chunks. Spans go to AgentCore Observability through the Runtime's
-OpenTelemetry instrumentation (Strands uses the global tracer it sets up); the local file exporter is not used here.
+AgentCore Runtime runs every session in its own microVM and keeps it between invocations of that session, so the
+desk agent built on the first invocation (with its Strands state and any pending write interrupt) serves the next
+ones. Answers stream back as text chunks. A write ends the invocation with the quote; the caller's next invocation is
+the interrupt response. Spans go to AgentCore Observability through the Runtime's OpenTelemetry instrumentation.
 """
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-import common, travel_desk
+import travel_desk
 
 app = BedrockAgentCoreApp()
-desks = {}
+desks = {}  # session id -> (desk agent, actor, pending interrupts)
 
 ACTOR_HEADER = "x-actor-id"  # allowlisted in agentcore.json (requestHeaderAllowlist)
 
@@ -34,15 +35,23 @@ async def invoke(payload, context):
     sid = context.session_id
     if sid not in desks:
         desks.clear()  # one session per microVM; never carry another session's agent over
-        desks[sid] = travel_desk.build(actor, travel_desk.memory_session(actor, sid), sid)
-    elif common.S.get("actor_id") != actor:
+        desk, _ = travel_desk.build(actor, travel_desk.memory_session(actor, sid), sid)
+        desks[sid] = (desk, actor, [])
+    desk, owner, pending = desks[sid]
+    if owner != actor:
         yield "This session belongs to another traveler."
         return
-    prompt = payload.get("prompt", "")
-    common.user_turn(prompt)
-    async for event in desks[sid].stream_async(prompt):
+    msg = payload.get("prompt", "")
+    prompt = [{"interruptResponse": {"interruptId": i.id, "response": msg}} for i in pending] if pending else msg
+    result = None
+    async for event in desk.stream_async(prompt):
         if "data" in event:
             yield event["data"]
+        result = event.get("result", result)
+    pending = list(result.interrupts or []) if result is not None and result.stop_reason == "interrupt" else []
+    for i in pending:
+        yield f"\n\n{i.reason}"  # the quote; the caller's next message answers it
+    desks[sid] = (desk, actor, pending)
 
 
 if __name__ == "__main__":

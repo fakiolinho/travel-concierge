@@ -1,5 +1,6 @@
 // Writes: only the Flight Ops identity, and only for a caller who passed identity verification this session.
-// The confirmation turn ("yes" in a later message) is enforced in agent code (common.gated): Cedar cannot see turns.
+// The confirmation turn ("yes" in a later message) is enforced in agent code by a Strands interrupt
+// (common.WriteGate): Cedar cannot see turns.
 permit (
   principal is AgentCore::IamEntity,
   action in [

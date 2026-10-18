@@ -1,10 +1,13 @@
-"""Traveler Profile: bookings history (Duffel orders tagged with the traveler, via the Gateway) + AgentCore Memory,
-as one record.
-Plain code, not an agent: it is a lookup, and the desk loads it once per session (no model hop per turn)."""
+"""Traveler Profile: the traveler's record for the desk, from two sources.
+
+- Bookings (Duffel orders tagged with the traveler, via the Gateway): summarized once per session into the desk's
+  system prompt by `load`. Plain code, not an agent: a lookup needs no model hop.
+- AgentCore Memory (preferences, facts, session summaries): recalled per caller turn by Strands' MemoryManager with
+  AgentCore memory stores (`memory`), scoped to this traveler's namespaces, and folded into that turn's message.
+"""
 
 import json
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 import common
@@ -43,34 +46,53 @@ def summarize(actor_id, trips):
             }
             for t in trips
         ],
-        "preferences": [],  # filled from AgentCore Memory by get_history
-        "facts": [],
-        "recent_session_summaries": [],
     }
 
 
 def load(actor_id):
-    """The verified traveler's record: routes, airports, airlines, cabins, orders (from bookings) plus preferences,
-    facts and recent session summaries (from AgentCore Memory). Loaded once per session into the desk's prompt."""
-    # Bookings (Gateway, as the desk) and Memory load in parallel; the Gateway call also warms the desk's session.
-    # No fixture here, so the same code runs in AgentCore Runtime.
-    with ThreadPoolExecutor(2) as pool:
-        orders = pool.submit(common.call_tool, "desk", "list_orders")
-        memory = pool.submit(common.memory_records, actor_id) if common.MEMORY_ID else None
-        orders, m = orders.result(), memory.result() if memory else None
+    """The verified traveler's bookings record: routes, airports, airlines, cabins, orders. One Gateway call as the
+    desk (it also warms the desk's Gateway session). No fixture here, so the same code runs in AgentCore Runtime."""
+    orders = common.gateway_call("desk", "list_orders", {"actor_id": actor_id})
     error = orders.get("error") if isinstance(orders, dict) else None
     record = summarize(actor_id, [] if error else [trip(o) for o in orders if o["status"] != "cancelled"])
     if error:  # say so in the record rather than fail the whole call
         record["bookings_error"] = error
-    if m:
-        record.update(
-            preferences=compact_preferences(m["preferences"])[:12],
-            # ponytail: newest N, not most relevant, to keep the prompt (and time to first token) small.
-            # Upgrade: semantic retrieval on the caller's question once Gateway/Runtime are in (step 4).
-            facts=m["facts"][:15],
-            recent_session_summaries=[" ".join(s.split())[:600] for s in m["summaries"][:2]],
-        )
     return record
+
+
+def namespaces(actor_id):
+    """Memory namespaces of one actor, matching agentcore/agentcore.json. The trailing slash keeps cust_a from matching
+    cust_ab. Summaries are per session (/summaries/{actor}/{session}/), so they are searched as a subtree."""
+    return [
+        {"namespace": f"/users/{actor_id}/preferences/", "max_search_results": 5},
+        {"namespace": f"/users/{actor_id}/facts/", "max_search_results": 5},
+        {"namespace_path": f"/summaries/{actor_id}/", "max_search_results": 2},
+    ]
+
+
+def memory(actor_id, session_id):
+    """Strands MemoryManager over recall only AgentCore memory stores for this traveler. Each caller turn it searches
+    the traveler's namespaces with the caller's message and folds the top entries into that turn (not the system
+    prompt, which stays cacheable). Writing stays with the AgentCore session manager; extraction is server side."""
+    if not common.MEMORY_ID:
+        return None
+    from bedrock_agentcore.memory.integrations.strands.memorystore import AgentCoreMemoryStore
+    from strands.memory import MemoryManager
+
+    stores = [
+        AgentCoreMemoryStore(
+            memory_id=common.MEMORY_ID, actor_id=actor_id, session_id=session_id, region_name=common.REGION, **ns
+        )
+        for ns in namespaces(actor_id)
+    ]
+    injection = {"max_entries": 12, "format": render_memory}  # default trigger: once per caller turn
+    return MemoryManager(stores=stores, search_tool_config=False, injection=injection)
+
+
+def render_memory(ctx):
+    """The memory block the desk sees: one line per record, preference records reduced to their sentence."""
+    lines = compact_preferences([" ".join(e.content.split())[:600] for e in ctx.entries])
+    return "<traveler_memory>\n" + "\n".join(f"- {line}" for line in lines) + "\n</traveler_memory>"
 
 
 def trip(order):
@@ -122,6 +144,12 @@ if __name__ == "__main__":
     assert [o["order_id"] for o in s["orders"]] == ["ord_0", "ord_1", "ord_2"] and "departure" not in str(s)
     prefs = ['{"context": "x", "preference": "Aisle seat", "categories": []}', "Aisle seat", "plain text"]
     assert compact_preferences(prefs) == ["Aisle seat", "plain text"]
+    from types import SimpleNamespace as NS
+
+    block = render_memory(NS(entries=[NS(content='{"preference": "Aisle seat"}'), NS(content="Coeliac:  gluten free")]))
+    assert block == "<traveler_memory>\n- Aisle seat\n- Coeliac: gluten free\n</traveler_memory>", block
+    assert [n.get("namespace") or n["namespace_path"] for n in namespaces("cust_a")] == [
+        "/users/cust_a/preferences/", "/users/cust_a/facts/", "/summaries/cust_a/"]  # fmt: skip
     o = {"order_id": "ord_1", "booking_reference": "R1", "status": "confirmed", "cabin": "economy", "total": "9.00",
          "currency": "EUR", "slices": [{"origin": "ATH", "destination": "LHR", "segments": [{"carrier": "ZZ Air"}]}]}  # fmt: skip
     assert summarize("cust_a", [trip(o)])["past_routes"][0]["route"] == "ATH-LHR"

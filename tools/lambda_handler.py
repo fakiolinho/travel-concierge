@@ -6,7 +6,8 @@ the departure < 24h cancel rule. The Duffel token is read from Secrets Manager h
 duffel.norm_* output is returned, so no model ever sees raw Duffel JSON.
 
 Writes are two calls: without quote_id (or confirm) they only quote; with the quote_id from that quote they execute.
-The confirmation turn between the two is enforced by the agents (common.gated), Cedar decides who may call at all.
+The confirmation turn between the two is enforced by the agents (common.WriteGate, a Strands interrupt), Cedar decides
+who may call at all.
 """
 
 import datetime as dt, json, os

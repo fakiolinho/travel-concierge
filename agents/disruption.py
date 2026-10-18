@@ -1,7 +1,7 @@
 """Disruption agent: weather and disruption risk for a booking or route, and rebooking options when risk is high.
 
-Desk ─► disruption (Strands agent as tool) ─► TripIntel tools (Gateway): airport_weather (METAR), airport_forecast
-        (TAF), destination_forecast (Open-Meteo), public_holidays (Nager.Date)
+Desk ─► disruption (Strands Agent.as_tool) ─► TripIntel tools (Gateway MCP): airport_weather (METAR), airport_forecast
+        (TAF), destination_forecast (Open-Meteo), public_holidays (Nager.Date), and Duffel get_order
                                        └─► flight_ops (Strands agent as tool): read only Flight Ops, get_order and
                                            change_options only, signed as the Disruption identity (Cedar: no writes)
 The report comes back to the desk as Strands structured output (JSON). It never changes a booking: any rebooking
@@ -12,72 +12,10 @@ import datetime as dt
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from strands import ToolContext, tool
 
-import common, flight_ops as fo, policy as pol
+import common, policy as pol
 
-TARGET = "TripIntel"
-
-
-def _intel(ctx, name, **args):
-    return common.call_tool(ctx.agent.name, name, target=TARGET, **args)
-
-
-@tool(context=True)
-def airport_weather(airport: str, tool_context: ToolContext) -> dict:
-    """Current weather observation (METAR) at an airport: flight category, wind, gusts, visibility, ceiling,
-    weather, plus risk level and the signals behind it.
-
-    Args:
-        airport: IATA airport code, e.g. LHR
-    """
-    return _intel(tool_context, "airport_weather", airport_code=airport)
-
-
-@tool(context=True)
-def airport_forecast(airport: str, tool_context: ToolContext) -> dict:
-    """Official terminal forecast (TAF) at an airport, usually the next 24 to 30 hours, period by period with risk.
-
-    Args:
-        airport: IATA airport code, e.g. LHR
-    """
-    return _intel(tool_context, "airport_forecast", airport_code=airport)
-
-
-@tool(context=True)
-def destination_forecast(airport: str, date: str, tool_context: ToolContext) -> dict:
-    """Daily weather forecast at an airport's location for one local date, today to 15 days ahead. Further out it
-    returns available=false and the date the forecast becomes available.
-
-    Args:
-        airport: IATA airport code, e.g. LAS
-        date: YYYY-MM-DD
-    """
-    return _intel(tool_context, "destination_forecast", airport_code=airport, date=date)
-
-
-@tool(context=True)
-def public_holidays(airport: str, start_date: str, end_date: str, tool_context: ToolContext) -> dict:
-    """Public holidays in the airport's country between two dates (busy travel days).
-
-    Args:
-        airport: IATA airport code, e.g. LHR
-        start_date: YYYY-MM-DD
-        end_date: YYYY-MM-DD
-    """
-    return _intel(tool_context, "public_holidays", airport_code=airport, start_date=start_date, end_date=end_date)
-
-
-@tool(context=True)
-def fx_convert(amount: str, from_currency: str, to_currency: str, tool_context: ToolContext) -> dict:
-    """Convert an amount from a tool result into another currency with the latest ECB reference rate (indicative).
-
-    Args:
-        amount: the amount exactly as a tool returned it, e.g. "402.26"
-        from_currency: ISO code, e.g. EUR
-        to_currency: ISO code, e.g. USD
-    """
-    return _intel(tool_context, "fx_convert", amount=amount, from_currency=from_currency, to_currency=to_currency)
+INTEL_TOOLS = ["airport_weather", "airport_forecast", "destination_forecast", "public_holidays"]
 
 
 class RebookOption(BaseModel):
@@ -126,24 +64,23 @@ How to work:
 Disruption rule: {rule}"""
 
 
-def build():
-    """The Disruption agent with its read only Flight Ops, ready to hand to the desk as a tool. Built once per session;
-    as_tool(preserve_context=False) resets both to a clean conversation on every call."""
+def build(state):
+    """The Disruption agent with its read only Flight Ops, as the desk's `disruption` tool. Built once per session;
+    as_tool(preserve_context=False) resets both to a clean conversation (and their construction time state) on every
+    call. Both sign Gateway calls as the Disruption identity, which Cedar refuses every write."""
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
     ops = common.agent(
         "flight_ops_read",
+        state,
         system_prompt=OPS_PROMPT.format(now=now),
-        tools=[fo.get_order, fo.change_options],  # read tools only: no write exists in this context
+        tools=common.gateway_tools("disruption", ["get_order", "change_options"]),  # no write exists in this context
     )
     agent = common.agent(
         "disruption",
+        state,
         system_prompt=PROMPT.format(now=now, rule=pol.RULES["disruption"]),
         tools=[
-            airport_weather,
-            airport_forecast,
-            destination_forecast,
-            public_holidays,
-            fo.get_order,  # direct lookup, signed as Disruption (Cedar: get_order allowed); saves an agent hop
+            *common.gateway_tools("disruption", [*INTEL_TOOLS, "get_order"]),  # get_order direct: saves an agent hop
             ops.as_tool(
                 name="flight_ops",
                 description="Read only Flight Ops, for rebooking options when risk is high: priced options to move "

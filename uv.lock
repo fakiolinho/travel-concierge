@@ -3062,6 +3062,7 @@ dependencies = [
     { name = "boto3" },
     { name = "mcp-proxy-for-aws" },
     { name = "openinference-instrumentation-strands-agents" },
+    { name = "python-dotenv" },
     { name = "strands-agents", extra = ["otel"] },
 ]
 
@@ -3079,6 +3080,7 @@ requires-dist = [
     { name = "boto3" },
     { name = "mcp-proxy-for-aws", specifier = ">=1.7.0" },
     { name = "openinference-instrumentation-strands-agents" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "strands-agents", extras = ["otel"] },
 ]
 
