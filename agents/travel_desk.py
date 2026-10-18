@@ -100,11 +100,17 @@ def ask(desk, msg):
     return result
 
 
+def text_of(result):
+    """The desk's words in this result. Not str(result): for an interrupted result that is the interrupts' repr."""
+    content = (result.message or {}).get("content", [])
+    return "".join(c.get("text", "") for c in content).strip()
+
+
 def respond(desk, msg):
     """One caller turn as text (the eval runner's entry point): the desk's answer, then any quote it asks to confirm."""
     desk.turn_log.reset()
     result = ask(desk, msg)
-    return "\n\n".join([str(result).strip(), *(i.reason for i in desk.pending_writes)]).strip()
+    return "\n\n".join([text_of(result), *(i.reason for i in desk.pending_writes)]).strip()
 
 
 def main():
@@ -158,7 +164,7 @@ def turn(desk, actor, msg, key):
     elif cache_on and not log.touched_write and not desk.pending_writes:
         expires = min(log.expires or float("inf"), time.time() + common.CACHE_TTL)
         if expires > time.time():
-            common.cache_put(key, str(result), expires)
+            common.cache_put(key, text_of(result), expires)
     steps = {n: t.total_time - before[0].get(n, 0.0) for n, t in m.tool_metrics.items()}
     steps["desk model"] = (m.accumulated_metrics["latencyMs"] - before[1]) / 1000
     shown = " · ".join(f"{n} {s:.1f}s" for n, s in sorted(steps.items(), key=lambda kv: -kv[1]) if s > 0)

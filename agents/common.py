@@ -241,10 +241,13 @@ def affirmed(response):
 def render_quote(action, quote):
     """The confirmation question the caller hears, built only from the quote's own fields."""
     label = {"book_offer": "Book", "change_order": "Change", "cancel_order": "Cancel", "add_bag": "Add bag to"}[action]
-    keys = ("order_id", "offer_id", "total", "change_total", "penalty", "refund_amount", "amount", "currency",
-            "refund_to", "quantity", "expires_at")  # fmt: skip
+    what = (
+        f"booking {quote['booking_reference']}" if quote.get("booking_reference") else f"offer {quote.get('offer_id')}"
+    )
+    keys = ("total", "change_total", "penalty", "refund_amount", "amount", "currency", "refund_to", "quantity",
+            "expires_at")  # fmt: skip
     fields = ", ".join(f"{k.replace('_', ' ')} {quote[k]}" for k in keys if quote.get(k) not in (None, ""))
-    return f"{label}: {fields}. Do you want me to go ahead? Please answer yes or no."
+    return f"{label} {what}: {fields}. Do you want me to go ahead? Please answer yes or no."
 
 
 class WriteGate(InterventionHandler):
@@ -370,9 +373,11 @@ if __name__ == "__main__":
     from strands.agent.state import AgentState
 
     assert affirmed("Yes, go ahead") and affirmed(True) and not affirmed("no") and not affirmed("what about friday?")
-    assert render_quote("cancel_order", {"quote_id": "x", "refund_amount": "10.00", "currency": "EUR"}) == (
-        "Cancel: refund amount 10.00, currency EUR. Do you want me to go ahead? Please answer yes or no."
-    )
+    q = {"quote_id": "x", "booking_reference": "ABC123", "refund_amount": "10.00", "currency": "EUR"}
+    assert render_quote("cancel_order", q) == (
+        "Cancel booking ABC123: refund amount 10.00, currency EUR. Do you want me to go ahead? Please answer yes or no."
+    ), render_quote("cancel_order", q)
+    assert render_quote("book_offer", {"offer_id": "off_1", "total": "9"}).startswith("Book offer off_1: total 9.")
     # SessionContext overwrites what the model sent, only on tools that take the fields.
     _system_fields["get_order"] = {"actor_id"}
     assert isinstance(SessionContext().before_tool_call(NS(tool_use={"name": "search_flights"})), Proceed)

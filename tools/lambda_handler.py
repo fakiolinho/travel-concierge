@@ -110,11 +110,12 @@ def bag_options(order_id, actor_id="", **_):
 
 
 def change_order(order_id, change_offer_id, actor_id="", quote_id="", **_):
-    _owned(order_id, actor_id)
+    order = _owned(order_id, actor_id)
     if not quote_id:
         c = duffel.call("POST", "/order_changes", {"selected_order_change_offer": change_offer_id})
         return {
             "quote_id": c["id"],
+            "booking_reference": order["booking_reference"],  # so the caller hears which booking it is
             "change_total": c["change_total_amount"],
             "currency": c["change_total_currency"],
             "penalty": c.get("penalty_total_amount"),
@@ -149,6 +150,7 @@ def cancel_order(order_id, actor_id="", quote_id="", now=None, **_):
         c = duffel.call("POST", "/order_cancellations", {"order_id": order_id})
         return {
             "quote_id": c["id"],
+            "booking_reference": order["booking_reference"],
             "refund_amount": c["refund_amount"],
             "currency": c["refund_currency"],
             "refund_to": c.get("refund_to"),
@@ -199,11 +201,12 @@ def book_offer(offer_id, actor_id="", confirm=False, **_):
 
 
 def add_bag(order_id, service_id, quantity=1, actor_id="", confirm=False, **_):
-    _owned(order_id, actor_id)
+    order = _owned(order_id, actor_id)
     svc = next((s for s in duffel.call("GET", f"/orders/{order_id}/available_services") if s["id"] == service_id), None)
     if not svc:
         raise ValueError(f"service {service_id} not available on {order_id}")
     q = {
+        "booking_reference": order["booking_reference"],
         "service_id": service_id,
         "quantity": int(quantity),
         "currency": svc["total_currency"],
