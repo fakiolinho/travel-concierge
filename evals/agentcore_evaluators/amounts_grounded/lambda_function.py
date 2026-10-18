@@ -22,8 +22,11 @@ def amounts(text):
 
 
 def strings(obj, path=()):
-    """(key path, string) for every string inside obj; JSON encoded strings are opened up too."""
+    """(key path, string) for every string inside obj; JSON encoded strings are opened up too. A named dict (a span
+    event such as gen_ai.choice) puts its name on the path: on Runtime the role is the event name, not a key."""
     if isinstance(obj, dict):
+        if isinstance(obj.get("name"), str):
+            path += (obj["name"],)
         for k, v in obj.items():
             yield from strings(v, path + (str(k),))
     elif isinstance(obj, list):
@@ -50,11 +53,12 @@ def judge(spans):
     for sid, chunks in parts.items():
         name = names.get(sid, "")
         for path, text in strings(chunks):
-            if name.startswith("execute_tool"):
+            on = lambda *keys: any(w in k for k in path for w in keys)  # noqa: E731
+            if name.startswith("execute_tool") or (name == "invoke_agent desk" and on("tool.message", "tool.result")):
                 tool_text.append(text)
-            elif name == "invoke_agent desk" and any("output" in k or "completion" in k for k in path):
+            elif name == "invoke_agent desk" and on("output", "completion", "choice", "assistant.message"):
                 answers.append(text)
-            elif name == "invoke_agent desk" and any("input" in k or "prompt" in k for k in path):
+            elif name == "invoke_agent desk" and on("input", "prompt", "user.message"):
                 typed.append(text)
             elif "Traveler record" in text:  # the system prompt's bookings record, loaded through the Gateway
                 record.append(text.split("Traveler record", 1)[1])
@@ -111,4 +115,12 @@ if __name__ == "__main__":
     adot = [{"spanId": "t", "name": "execute_tool get_order"}, {"spanId": "t", "body": out(msg("tool", '{"total": "1.50"}'))},
             {"spanId": "d", "name": "invoke_agent desk"}, {"spanId": "d", "body": out(msg("assistant", "It was 1.50"))}]  # fmt: skip
     assert run(*adot)["label"] == "Pass"
+    # Shape 3: Runtime (adot_cw), the role is the event name and the text sits in attributes.content.
+    ev = lambda n, text: {"name": n, "attributes": {"content": json.dumps([{"text": text}])}}  # noqa: E731
+    rt = {"spanId": "d", "name": "invoke_agent desk", "source": "adot_cw", "events": [
+        ev("gen_ai.system.message", "Traveler record: TYBXUT 118.24"), ev("gen_ai.user.message", "What did I pay?"),
+        ev("gen_ai.tool.message", '{"total": "20.00"}'), ev("gen_ai.choice", "You paid 118.24, change fee 20.00.")]}  # fmt: skip
+    assert run(rt)["label"] == "Pass", run(rt)
+    rt["events"][-1] = ev("gen_ai.choice", "You paid 118.24, about 131.07 USD.")
+    assert run(rt)["label"] == "Fail"
     print("amounts_grounded: ok")

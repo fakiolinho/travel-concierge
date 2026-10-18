@@ -71,7 +71,7 @@ def batch(path):
         for cid, s in run["sessions"].items()]}, indent=1))  # fmt: skip
     state = json.loads((ROOT / "agentcore/.cli/deployed-state.json").read_text())
     custom = [v["evaluatorArn"] for v in state["targets"]["default"]["resources"].get("evaluators", {}).values()]
-    cmd = ["agentcore", "run", "batch-evaluation", "-r", "TravelDesk", "-n", f"evals-{run['stamp']}", "-e", *BUILTINS,
+    cmd = ["agentcore", "run", "batch-evaluation", "-r", "TravelDesk", "-n", f"evals_{run['stamp'].replace('-', '_')}_{dt.datetime.now():%H%M%S}", "-e", *BUILTINS,
            "--evaluator-arn", *custom, "-s", *[s["session_id"] for s in run["sessions"].values()],
            "-g", str(gt), "--wait", "--json"]  # fmt: skip
     print("running:", " ".join(cmd[:12]), "...")
