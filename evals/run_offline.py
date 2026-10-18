@@ -554,7 +554,10 @@ def main():
     ap.add_argument("--agentcore", action="store_true", help="AgentCore Evaluation API judges (built in + custom)")
     ap.add_argument("--cloudwatch", action="store_true", help="eval metrics + Strands Evals results to CloudWatch")
     ap.add_argument("--workers", type=int, default=12, help="parallel judge workers (cases still run one at a time)")
+    ap.add_argument("--from-results", help="log a saved results file to Phoenix (and CloudWatch) without rerunning")
     args = ap.parse_args()
+    if args.from_results:
+        return relog(args)
 
     # service.name: Strands Evals' CloudWatch logger requires it; harmless for Phoenix.
     os.environ.setdefault(
@@ -807,6 +810,21 @@ def main():
     return 1 if gate_fail and args.suite != "simulated" else 0
 
 
+def relog(args):
+    """Phoenix experiment (and with --cloudwatch the metrics) from a saved evals/results file."""
+    d = json.loads(Path(args.from_results).read_text())
+    args.suite = d.get("suite", args.suite)
+    by_id = {c["id"]: c for c in load_cases(args)}
+    cases = [by_id[cid] for cid in d["cases"] if cid in by_id]
+    runs = {cid: c["run"] for cid, c in d["cases"].items()}
+    results = {cid: c["checks"] for cid, c in d["cases"].items()}
+    if args.cloudwatch:
+        print(cloudwatch_metrics(args, cases, runs, results))
+    if not args.no_phoenix:
+        print(phoenix_log(cases, runs, results, d["label"], d["sha"], SUITES[args.suite][1]))
+    return 0
+
+
 def run_judges(args, cases, runs, results, common, Case, Experiment, Evaluator):
     """LLM judges and AgentCore evaluators over finished runs, run concurrently by Strands Evals. Each judge sees the
     trajectory shape it expects: a Strands Evals Session (session/trace/tool level judges), the leaf tool names
@@ -1057,7 +1075,8 @@ def cloudwatch_metrics(args, cases, runs, results):
             put("TurnSeconds", t["secs"], "Seconds", Category=c["category"])
             put("TurnSeconds", t["secs"], "Seconds")
         for name, j in (r.get("judges") or {}).items():
-            put("JudgeScore", j["score"], Evaluator=name)
+            if "score" in j:
+                put("JudgeScore", j["score"], Evaluator=name)
         for q, a in ((r.get("decider") or {}).get("answers") or {}).items():
             put("DeciderPYes", a["p_yes"], Question=q)
     cw = boto3.client("cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1"))

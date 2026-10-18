@@ -117,8 +117,12 @@ def auc(pairs):
     return wins / (len(pos) * len(neg))
 
 
-def calibrate(pairs):
-    """Threshold, band and invert flag for one question from (p_yes, label) pairs."""
+MIN_REAL_NEGATIVES = 5  # injected counterfactuals alone never make a question gating
+
+
+def calibrate(pairs, real_negatives=0):
+    """Threshold, band and invert flag for one question from (p_yes, label) pairs. `real_negatives`: how many of the
+    False labels come from real runs or humans rather than counterfactuals."""
     a = auc(pairs)
     if a is None:
         return {"status": "insufficient_labels", "n": len(pairs), "pos": sum(y for _, y in pairs)}
@@ -147,12 +151,12 @@ def calibrate(pairs):
                 break
         else:
             band = None
-    acc, kept = bal_acc(cut, band or 0.0)
+    acc, kept = bal_acc(cut, band) if band is not None else (best, 0)  # no band works: every answer is uncertain
     uncertain = 1 - kept / len(pts)
     return {
         "status": "calibrated",
         "threshold": round(cut, 4),
-        "band": round(band, 2) if band is not None else 0.5,
+        "band": round(band, 2) if band is not None else 1.0,
         "invert": invert,
         "auc": round(a, 3),
         "balanced_accuracy_at_cut": round(best, 3),
@@ -160,7 +164,8 @@ def calibrate(pairs):
         "uncertain_rate": round(uncertain, 3),
         "n": len(pts),
         "pos": sum(y for _, y in pts),
-        "gating": band is not None and acc >= 0.9 and uncertain <= 0.3,
+        "real_negatives": real_negatives,
+        "gating": band is not None and acc >= 0.9 and uncertain <= 0.3 and real_negatives >= MIN_REAL_NEGATIVES,
     }
 
 
@@ -169,8 +174,13 @@ def main():
     ap.add_argument("results", nargs="*")
     ap.add_argument("--no-counterfactuals", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="print, don't write the thresholds file")
+    ap.add_argument("--from-pairs", help="reuse the (p_yes, label) pairs a previous run saved; no Decider calls")
     args = ap.parse_args()
-    paths = args.results or sorted(str(p) for p in (ROOT / "evals/results").glob("*.json"))
+    saved = json.loads(Path(args.from_pairs).read_text()) if args.from_pairs else None
+    if saved and not args.results:
+        args.results = saved["result_files"]
+    paths = args.results or sorted(str(p) for p in (ROOT / "evals/results").glob("*-acceptance.json"))
+    paths += [] if args.results else sorted(str(p) for p in (ROOT / "evals/results").glob("*-dataset.json"))
     runs = load_runs(paths)
     print(f"{len(runs)} runs with Decider answers from {len(paths)} result files")
     humans = human_labels(runs)
@@ -186,7 +196,10 @@ def main():
             elif q in lab:
                 data[q]["real"].append((answers[q]["p_yes"], lab[q]))
 
-    if not args.no_counterfactuals:
+    if saved:  # the slow part: counterfactual Decider answers; real and human labels are rebuilt above
+        for q in QUESTIONS:
+            data[q]["counterfactual"] = [tuple(x) for x in saved["data"][q]["counterfactual"]]
+    elif not args.no_counterfactuals:
         d = ro.Decider()
         d.start()
         if not d.ok:
@@ -201,13 +214,23 @@ def main():
                     answers, _ = d.ask(state)
                     data[q]["counterfactual"].append((answers[q]["p_yes"], False))
             d.stop()
+    if not saved:
+        PAIRS.write_text(json.dumps({"result_files": paths, "data": data}))
+        print(f"pairs saved to {PAIRS.relative_to(ROOT)} (--from-pairs reuses the counterfactual answers)")
+    return report_and_write(args, data, paths)
 
+
+PAIRS = ROOT / "evals/results/decider_pairs.json"  # gitignored with the other results
+
+
+def report_and_write(args, data, paths):
     report = {}
     print(f"\n{'question':16} {'source':>15} {'n':>4} {'pos':>4} {'auc':>6} {'cut':>6} {'band':>5} {'inv':>4} "
           f"{'bal.acc':>8} {'uncert':>7} gating")  # fmt: skip
     for q in QUESTIONS:
         pairs = data[q]["human"] + data[q]["real"] + data[q]["counterfactual"]
-        r = calibrate(pairs)
+        real_neg = sum(not y for _, y in data[q]["human"] + data[q]["real"])
+        r = calibrate(pairs, real_neg)
         r["sources"] = {k: len(v) for k, v in data[q].items()}
         real_only = calibrate(data[q]["human"] + data[q]["real"])
         r["real_only"] = {k: real_only.get(k) for k in ("status", "auc", "n", "pos")}
@@ -238,8 +261,12 @@ def main():
 if __name__ == "__main__":
     if sys.argv[1:] == ["--selftest"]:
         clean = [(0.9, True), (0.8, True), (0.7, True), (0.2, False), (0.1, False)]
-        r = calibrate(clean)
+        r = calibrate(clean, real_negatives=5)
         assert r["status"] == "calibrated" and not r["invert"] and r["band"] == 0.0 and r["gating"], r
+        assert not calibrate(clean, real_negatives=2)["gating"], "counterfactual negatives alone never gate"
+        hopeless = [(0.5, True), (0.5, False)] * 4
+        h = calibrate(hopeless, real_negatives=9)
+        assert h["band"] == 1.0 and h["uncertain_rate"] == 1.0 and not h["gating"], h
         assert 0.2 < r["threshold"] < 0.7
         backwards = [(1 - p, y) for p, y in clean]
         assert calibrate(backwards)["invert"], "a question read backwards is inverted"

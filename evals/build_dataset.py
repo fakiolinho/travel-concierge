@@ -43,6 +43,8 @@ B = {
     "DFUCVK": ("cust_nikos", "ATH-LHR", "2026-12-06", "117.46", (True, "20.00"), (False, None)),
     "ANCNXD": ("cust_nikos", "ATH-BCN", "2026-12-09", "98.33", (True, "20.00"), (True, "20.00")),
 }
+AIRPORT_NAMES = {"LHR": ["Heathrow"], "CDG": ["Charles de Gaulle"], "JFK": ["Kennedy"], "FCO": ["Fiumicino"],
+                 "AMS": ["Schiphol"], "DXB": ["Dubai"], "BCN": ["Barcelona"]}  # fmt: skip
 REFS = {a: [r for r, b in B.items() if b[0] == a] for a in ("cust_marios", "cust_eleni", "cust_nikos")}
 NO_FORECAST = ["no forecast", "not available", "too far", "isn't available", "not yet", "no detailed forecast",
                "can't forecast", "cannot forecast", "too early", "beyond", "can't tell", "cannot tell",
@@ -89,7 +91,7 @@ def happy_path():
         args = {"destination": iata, "departure_date": date, **({"return_date": ret} if ret else {})}
         c.append(case(f"hp_search_{iata.lower()}_{date[5:].replace('-', '')}", "happy_path", actor,
                       [turn(ask, tools_called=["search_flights"], tool_args={"search_flights": args},
-                            contains_any=[iata, city])]))  # fmt: skip
+                            contains_any=[iata, city, *AIRPORT_NAMES.get(iata, [])])]))  # fmt: skip
     for ref in ["TYBXUT", "4GWAIJ", "OUFWM7", "LGHJKJ", "4DJHRC", "5Y4HM3", "T5WYM2", "YORIAJ", "54XDRP", "6P3MZH",
                 "QE4BGO", "YZMRYU", "DFUCVK", "ANCNXD"]:  # fmt: skip
         actor, route, dep, total = B[ref][:4]
@@ -163,8 +165,10 @@ def routing():
                       [turn(f"If I cancel {ref}, how much money would I get back?", **exp)]))  # fmt: skip
     for ref, date in [("TYBXUT", "2026-10-30"), ("4GWAIJ", "2026-11-05"), ("LGHJKJ", "2026-11-10"),
                       ("QE4BGO", "2026-12-01"), ("YLNUD2", "2026-11-02"), ("54XDRP", "2026-11-25")]:  # fmt: skip
-        actor = B[ref][0]
-        exp = dict(tools_called=["change_options"], tools_not_called=["cancel_order", "book_offer", "change_order"])
+        actor, change_ok = B[ref][0], B[ref][4][0]
+        exp = dict(tools_not_called=["cancel_order", "book_offer", "change_order"])
+        # A fare whose conditions forbid changes may be answered from get_order or quoted with change_options
+        exp |= dict(tools_called=["change_options"]) if change_ok else dict(tools_any=[["change_options", "get_order"]])
         c.append(case(f"rt_change_{ref.lower()}", "routing", actor,
                       [turn(f"Can I move {ref} to {date}? How much would it cost?", **exp)]))  # fmt: skip
     for ref in ["TYBXUT", "QE4BGO"]:

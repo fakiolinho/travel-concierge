@@ -65,10 +65,16 @@ def main():
     ap.add_argument("--n", type=int, default=50)
     ap.add_argument("results", nargs="?")
     args = ap.parse_args()
-    files = [Path(args.results)] if args.results else sorted((ROOT / "evals/results").glob("*.json"), reverse=True)
-    path = next(
-        (f for f in files if any(c["checks"].get("decider") for c in json.loads(f.read_text())["cases"].values())), None
+    files = (
+        [Path(args.results).resolve()]
+        if args.results
+        else sorted((ROOT / "evals/results").glob("*.json"), reverse=True)
     )
+
+    def has_decider(f):  # results files only (decider_pairs.json has no cases)
+        return any(c["checks"].get("decider") for c in json.loads(f.read_text()).get("cases", {}).values())
+
+    path = next((f for f in files if has_decider(f)), None)
     if not path:
         sys.exit("no results with Decider answers: run evals/run_offline.py --decider first")
     cases = json.loads(path.read_text())["cases"]

@@ -1,0 +1,112 @@
+{
+  "model": "StrandsAgents/strands-decider-2B-hobson-v19",
+  "calibrated_at": "2026-10-18T07:12:12+00:00",
+  "result_files": [
+    "evals/results/20261018-072507-9a6c1a9-acceptance.json",
+    "evals/results/20261018-090144-0b00e3c-dataset.json"
+  ],
+  "note": "threshold/band/invert apply to p_yes; questions without status 'calibrated' fall back to the PLAN.md default (confidence < 0.9 is uncertain). Only `gating` questions may block a turn.",
+  "questions": {
+    "prices_grounded": {
+      "status": "calibrated",
+      "threshold": 0.402,
+      "band": 0.25,
+      "invert": false,
+      "auc": 0.746,
+      "balanced_accuracy_at_cut": 0.677,
+      "balanced_accuracy_outside_band": 1.0,
+      "uncertain_rate": 0.936,
+      "n": 344,
+      "pos": 172,
+      "real_negatives": 0,
+      "gating": false,
+      "sources": {
+        "real": 172,
+        "human": 0,
+        "counterfactual": 172
+      },
+      "real_only": {
+        "status": "insufficient_labels",
+        "auc": null,
+        "n": 172,
+        "pos": 172
+      }
+    },
+    "claims_backed": {
+      "status": "calibrated",
+      "threshold": 0.4409,
+      "band": 1.0,
+      "invert": true,
+      "auc": 0.46,
+      "balanced_accuracy_at_cut": 0.596,
+      "balanced_accuracy_outside_band": 0.596,
+      "uncertain_rate": 1.0,
+      "n": 201,
+      "pos": 29,
+      "real_negatives": 0,
+      "gating": false,
+      "sources": {
+        "real": 29,
+        "human": 0,
+        "counterfactual": 172
+      },
+      "real_only": {
+        "status": "insufficient_labels",
+        "auc": null,
+        "n": 29,
+        "pos": 29
+      }
+    },
+    "write_confirmed": {
+      "status": "calibrated",
+      "threshold": 0.2383,
+      "band": 0.0,
+      "invert": false,
+      "auc": 0.923,
+      "balanced_accuracy_at_cut": 0.916,
+      "balanced_accuracy_outside_band": 0.916,
+      "uncertain_rate": 0.0,
+      "n": 344,
+      "pos": 172,
+      "real_negatives": 0,
+      "gating": false,
+      "sources": {
+        "real": 172,
+        "human": 0,
+        "counterfactual": 172
+      },
+      "real_only": {
+        "status": "insufficient_labels",
+        "auc": null,
+        "n": 172,
+        "pos": 172
+      }
+    },
+    "in_scope": {
+      "status": "calibrated",
+      "threshold": 0.513,
+      "band": 0.0,
+      "invert": false,
+      "auc": 1.0,
+      "balanced_accuracy_at_cut": 1.0,
+      "balanced_accuracy_outside_band": 1.0,
+      "uncertain_rate": 0.0,
+      "n": 337,
+      "pos": 165,
+      "real_negatives": 0,
+      "gating": false,
+      "sources": {
+        "real": 165,
+        "human": 0,
+        "counterfactual": 172
+      },
+      "real_only": {
+        "status": "insufficient_labels",
+        "auc": null,
+        "n": 165,
+        "pos": 165
+      }
+    }
+  },
+  "not_calibrated": {}
+}
