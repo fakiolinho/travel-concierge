@@ -56,10 +56,13 @@ def model(role):
 LOG_DIR = ROOT / "logs"
 
 
-def setup_tracing():
+def setup_tracing(native_processors=()):
     """Strands' built in OpenTelemetry tracing, exported as one JSON span per line to logs/traces-YYYY-MM-DD.jsonl.
     Spans cover every agent run, event loop cycle, model call and tool call, with start/end timestamps, parent ids
-    (sub agent spans nest under the desk tool span that called them), token usage, and inputs/outputs."""
+    (sub agent spans nest under the desk tool span that called them), token usage, and inputs/outputs.
+
+    `native_processors` run before the OpenInference rewrite below, so they see Strands' own span shape (message
+    events). The evals need that shape: Strands Evals' session mapper and AgentCore's ADOT converter read it."""
     from strands.telemetry import StrandsTelemetry
 
     # ponytail: local file with unredacted conversation text. Upgrade: AgentCore Observability (CloudWatch) in
@@ -72,6 +75,8 @@ def setup_tracing():
     os.environ.setdefault("OTEL_SERVICE_NAME", "travel-concierge")
     os.environ.setdefault("OTEL_RESOURCE_ATTRIBUTES", "openinference.project.name=travel-concierge")
     telemetry = StrandsTelemetry()
+    for p in native_processors:
+        telemetry.tracer_provider.add_span_processor(p)
     # Arize's processor copies Strands' gen_ai message events into OpenInference attributes (input/output
     # messages, tool calls, span kinds), so Phoenix can show prompts and answers. Added first: processors run in
     # order, and both exporters below should see the enriched spans.
