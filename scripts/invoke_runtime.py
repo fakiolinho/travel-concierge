@@ -46,7 +46,7 @@ def main():
             payload=json.dumps({"prompt": prompt, "actor_id": args.actor}).encode(),
         )
         first, buf = None, b""
-        for chunk in r["response"].iter_chunks():
+        for chunk in r["response"].iter_chunks(chunk_size=64):  # small reads, or the 1 KB default hides streaming
             first = first or time.perf_counter() - t0
             buf += chunk
         total = time.perf_counter() - t0
