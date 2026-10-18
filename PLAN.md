@@ -11,8 +11,9 @@ Caller ─► Travel Desk (agent, AgentCore Runtime)
             │               loaded once per session; Policy rules (refund/change, 24h, disruption compensation)
             │ writes the conversation to Memory, never retrieves from it directly
             ├─► Duffel read tools  search_flights, get_order, list_orders, seat_map, change_options, bag_options
-            └─► Flight Ops (agent) change_order*, cancel_order*, add_bag*
+            └─► Flight Ops (agent) book_offer*, change_order*, cancel_order*, add_bag*
             * = write tool, Cedar gated
+All Duffel tools ─► AgentCore Gateway (AWS_IAM; each agent signs as its own role) ─► Cedar ─► one Lambda target.
 ```
 Pattern: one desk agent with direct read tools; agents as tools only for writes (Flight Ops). Changed from
 "agents as tools for everything" for latency: each agent hop cost 3 to 9s, the target is a 2 to 3s turn.
@@ -38,11 +39,16 @@ Seed with 10 to 15 scripted past sessions per traveler so extractors have real m
 Structured history (prices, routes, dates) comes from Duffel orders, never from LLM memory.
 
 ## Guardrails
-Layer A, Bedrock Guardrails on the model: PII (passport, card), denied topics (visa, medical), grounding on Policy KB.
+Layer A, Bedrock Guardrails on the model: PII (passport, card), denied topics (visa, medical), grounding on Policy KB
+(grounding not built yet: the policy rules are prompt text, not a KB). Async stream mode; it still costs ~0.5 to 1s
+per model call because input is checked first.
 Layer B, AgentCore Policy / Cedar on Gateway, ENFORCE, default deny:
 - permit read tools for all authenticated principals
-- permit write tools only for principal FlightOps AND context.guest_verified == true
-- forbid cancel_order when departure < 24h (route to human)
+- permit write tools only for principal FlightOps AND context.guest_verified == true (principals are the two
+  assumed IAM roles; `actor_id` / `guest_verified` are added to tool input by agent code, never by the model)
+- forbid write tools for the desk principal (explicit, survives a future broader permit)
+- forbid cancel_order when departure < 24h (route to human). Built in the Lambda: Cedar only sees tool arguments,
+  not the departure time.
 - guardrails clause on free text args (special requests, notes)
 Layer C, Strands Decider pre send gate in orchestrator (context Cedar cannot see). Yes/no (`noul`) questions;
 every answer carries a calibrated confidence, and below the threshold (start at 0.9) the turn is held for a human:
@@ -75,4 +81,4 @@ Online: Decider every turn (`strands-decider serve`), LLM judge sampled, low con
 - Duffel Airways schedules/prices are unrealistic: fine for evals, say so in demos.
 - Don't let multi agent hide failures: trace every handoff, grade routing explicitly.
 - Strands Decider is a 0.1.0 experimental release (Oct 2026): pin the model revision, re-calibrate on any upgrade.
-  It is a 2B torch model, so the online gate needs a host: decide in step 4 between a Runtime sidecar and a SageMaker endpoint.
+  It is a 2B torch model, so the online gate needs a host (Runtime sidecar or SageMaker endpoint): still open after step 4.
