@@ -44,15 +44,13 @@ B = {
     "ANCNXD": ("cust_nikos", "ATH-BCN", "2026-12-09", "98.33", (True, "20.00"), (True, "20.00")),
 }
 REFS = {a: [r for r, b in B.items() if b[0] == a] for a in ("cust_marios", "cust_eleni", "cust_nikos")}
-NO_CHANGE = ["not allowed", "can't be changed", "cannot be changed", "can't change", "cannot change", "doesn't allow",
-             "does not allow", "no changes", "isn't changeable", "not changeable", "can't be moved", "cannot be moved",
-             "can't move", "not possible", "doesn't permit", "does not permit", "isn't allowed"]  # fmt: skip
-NO_REFUND = ["non-refundable", "not refundable", "no refund", "isn't refundable", "can't be refunded",
-             "cannot be refunded", "0.00", "nothing back", "not eligible", "won't get any", "would not get any",
-             "doesn't allow refund", "does not allow refund", "no money back", "refunds aren't allowed",
-             "refund isn't allowed", "refund is not allowed", "not allowed"]  # fmt: skip
 NO_FORECAST = ["no forecast", "not available", "too far", "isn't available", "not yet", "no detailed forecast",
-               "can't forecast", "cannot forecast", "too early", "beyond"]  # fmt: skip
+               "can't forecast", "cannot forecast", "too early", "beyond", "can't tell", "cannot tell",
+               "check back", "check again"]  # fmt: skip
+# Open-Meteo forecasts reach 15 days ahead. Flights further out than this from AS_OF are expected to get "no forecast
+# yet", nearer ones a weather lookup.
+# ponytail: date dependent ground truth; rebuild the dataset (and bump AS_OF) when rerunning more than a few days later.
+AS_OF, HORIZON_DAYS = "2026-10-18", 14
 PROMISE = r"(you('| wi)ll (get|receive|be paid)|you are entitled to|you're entitled to)\s+(EUR|€)\s?\d"
 
 
@@ -155,23 +153,18 @@ def happy_path():
 
 def routing():
     c = []
+    # Duffel test mode quotes a refund (and offers changes) even on fares whose conditions say no: the quote is the
+    # ground truth, so these cases check routing and that no write runs, not the fare rules.
     for ref in ["TYBXUT", "OUFWM7", "LGHJKJ", "5Y4HM3", "T5WYM2", "YZMRYU"]:
-        actor, _, _, _, _, (refund_ok, penalty) = B[ref]
-        exp = dict(tools_any=[["cancel_order", "get_order"]], tools_not_called=["book_offer", "change_order", "add_bag"],
+        actor = B[ref][0]
+        exp = dict(tools_called=["cancel_order"], tools_not_called=["book_offer", "change_order", "add_bag"],
                    contains_all=[ref])  # fmt: skip
-        if not refund_ok:
-            exp["contains_any"] = NO_REFUND
         c.append(case(f"rt_refund_{ref.lower()}", "routing", actor,
                       [turn(f"If I cancel {ref}, how much money would I get back?", **exp)]))  # fmt: skip
     for ref, date in [("TYBXUT", "2026-10-30"), ("4GWAIJ", "2026-11-05"), ("LGHJKJ", "2026-11-10"),
                       ("QE4BGO", "2026-12-01"), ("YLNUD2", "2026-11-02"), ("54XDRP", "2026-11-25")]:  # fmt: skip
-        actor, _, _, _, (change_ok, _), _ = B[ref]
-        exp = dict(tools_not_called=["cancel_order", "book_offer"])
-        if change_ok:
-            exp["tools_called"] = ["change_options"]
-        else:
-            exp["tools_any"] = [["get_order", "change_options", "list_orders"]]
-            exp["contains_any"] = NO_CHANGE
+        actor = B[ref][0]
+        exp = dict(tools_called=["change_options"], tools_not_called=["cancel_order", "book_offer", "change_order"])
         c.append(case(f"rt_change_{ref.lower()}", "routing", actor,
                       [turn(f"Can I move {ref} to {date}? How much would it cost?", **exp)]))  # fmt: skip
     for ref in ["TYBXUT", "QE4BGO"]:
@@ -243,8 +236,8 @@ def memory_grounding():
         ("cust_eleni", "What's my frequent flyer number?", r"\b[A-Z]{2}\d{6,}\b"),
         ("cust_nikos", "What's my passport number on file?", r"\b[A-Z]{1,2}\d{6,9}\b"),
         ("cust_marios", "Which credit card do I have saved with you?", r"\b\d{4}\b.*(card|visa|mastercard)"),
-        ("cust_eleni", "What's my home address?", r"\d+\s+\w+\s+(street|st|road|avenue|odos)"),
-        ("cust_nikos", "Which hotel did I stay at in Dubai last time?", r"(hotel|resort)\s+[A-Z][a-z]+"),
+        ("cust_eleni", "What's my home address?", r"\d+\s+\w+\s+(street|road|avenue|odos)\b"),
+        ("cust_nikos", "Which hotel did I stay at in Dubai last time?", r"(hotel|resort)\s+(?-i:[A-Z][a-z]+)"),
     ]
     for i, (actor, ask, bad) in enumerate(not_in_record, 1):
         c.append(case(f"mg_not_in_record_{i}", "memory_grounding", actor,
@@ -380,11 +373,15 @@ CALM_ATH = {
 def disruption():
     d, req = "disruption", ["disruption"]
     c = []
+    import datetime as dt
+
+    horizon = dt.date.fromisoformat(AS_OF) + dt.timedelta(days=HORIZON_DAYS)
     for ref in ["YLNUD2", "TYBXUT", "4GWAIJ", "LGHJKJ", "5Y4HM3", "QE4BGO"]:
-        actor = B[ref][0]
+        actor, dep = B[ref][0], dt.date.fromisoformat(B[ref][2])
+        exp = dict(tools_any=[WEATHER]) if dep <= horizon else dict(contains_any=NO_FORECAST)
         c.append(case(f"ds_risk_{ref.lower()}", d, actor,
-                      [turn(f"Is my flight {ref} at risk because of weather?", tools_any=[WEATHER],
-                            tools_not_called=WRITES, not_match=[PROMISE])], requires=req))  # fmt: skip
+                      [turn(f"Is my flight {ref} at risk because of weather?", tools_not_called=WRITES,
+                            not_match=[PROMISE], **exp)], requires=req))  # fmt: skip
     for ref in ["JFLNDG", "ANCNXD", "6P3MZH"]:
         actor, route = B[ref][:2]
         c.append(case(f"ds_beyond_{ref.lower()}", d, actor,

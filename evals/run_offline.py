@@ -281,8 +281,8 @@ DECIDER_QUESTIONS = {
         "instructions": "Are the agent's statements about the traveler's history and preferences supported?",
         "criteria": {
             "true": "The answer makes no claim about the traveler's past or habits, or every such claim is in "
-            "traveler_record or tool_results.",
-            "false": "The answer claims something about the traveler's past or habits that is in neither.",
+            "traveler_record, traveler_memory or tool_results.",
+            "false": "The answer claims something about the traveler's past or habits that is in none of them.",
         },
     },
     "write_confirmed": {
@@ -408,6 +408,7 @@ def decider_state(case, run):
             if executed_write(c)
         ],
         "traveler_record": clip(run.get("record", ""), 1000),
+        "traveler_memory": clip(run.get("memory", ""), 600),  # recalled this call: also a valid source for claims
     }
 
 
@@ -477,6 +478,24 @@ def stub_gateway_tools(common):
         return out
 
     common.gateway_tools = stubbed
+
+
+RECALLED = []  # memory blocks the desk saw during the running case
+
+
+def capture_memory():
+    """Record each turn's <traveler_memory> block. The MemoryManager folds it into the turn and drops it again, so it
+    is in neither desk.messages nor a span; the judges need it to tell a grounded "you usually" from an invented one."""
+    import traveler_profile as tp
+
+    real = tp.render_memory
+
+    def render(ctx):
+        block = real(ctx)
+        RECALLED.append(block)
+        return block
+
+    tp.render_memory = render  # read when td.build() creates the MemoryManager
 
 
 def expected_trajectory(case):
@@ -559,6 +578,7 @@ def main():
     mem = InMemorySpanExporter()  # OpenInference shaped (input.value / output.value): the deterministic checks read it
     trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(mem))
     stub_gateway_tools(common)
+    capture_memory()
 
     global REFS
     t_index = time.time()
@@ -627,6 +647,7 @@ def main():
         start = len(native.spans)
         STUBS.clear()
         STUBS.update(c.get("stub_tools") or {})
+        RECALLED.clear()
         try:
             before = (
                 {o["id"] for o in duffel_orders() if (o.get("metadata") or {}).get("actor_id") == c["actor"]}
@@ -643,9 +664,7 @@ def main():
                 for t in c["turns"]:
                     if play(desk, run, t["user"])["error"]:
                         break
-            texts = [b.get("text", "") for m in desk.messages if m["role"] == "user" for b in m["content"]]
-            blocks = re.findall(r"<traveler_memory>.*?</traveler_memory>", "\n".join(texts), re.S)
-            run["memory"] = "\n".join(dict.fromkeys(blocks))
+            run["memory"] = "\n".join(dict.fromkeys(RECALLED))
             run["end_state"] = settle_end_state(c, before)
         except Exception as e:
             run["turns"].append({"user": "(setup)", "answer": "", "error": repr(e)[:500], "secs": 0, "tools": []})
