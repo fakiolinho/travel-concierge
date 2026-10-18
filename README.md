@@ -1,11 +1,13 @@
 # travel_concierge
 
 A multi agent airline service desk on Amazon Bedrock AgentCore. A Travel Desk agent answers callers using Duffel
-(test mode), the traveler's record (bookings plus AgentCore Memory) and the desk policy, and hands every booking
-change to a Flight Ops agent. It is graded by layered evals. `PLAN.md` has the full design and the step order.
+(test mode), the traveler's record (bookings plus AgentCore Memory) and the desk policy, hands every booking
+change to a Flight Ops agent, and weather and disruption questions to a Disruption agent (live airport weather,
+forecasts, holidays). It is graded by layered evals. `PLAN.md` has the full design and the step order.
 
 **Status: step 4 of 6.** The desk runs on AgentCore Runtime (and locally) with AgentCore Memory, every Duffel
-tool behind AgentCore Gateway with Cedar policies in ENFORCE mode, and a Bedrock Guardrail on both agents. All
+tool behind AgentCore Gateway with Cedar policies in ENFORCE mode, and a Bedrock Guardrail on the agents. A
+Disruption agent adds live airport weather, forecasts, holidays and FX (a second Gateway Lambda target). All
 infrastructure is declared in `agentcore/agentcore.json` and its CDK stack. Evals come next
 (see [Roadmap](#roadmap)).
 
@@ -16,13 +18,26 @@ session start: traveler record = bookings (Gateway list_orders) + AgentCore Memo
                policy rules (agents/policy.py)                                     ─┤ into the desk prompt
                                                                                     ▼
 caller ─► AgentCore Runtime ─► Travel Desk agent (agents/travel_desk.py, runtime_app.py)   [Bedrock Guardrail]
-            ├─► read tools ──────────────────────────── as role TravelConcierge-DeskGateway ──┐
+            ├─► read tools, fx_convert ──────────────── as role TravelConcierge-DeskGateway ──┐
+            ├─► disruption ─► Disruption agent (agents/disruption.py, Haiku 5.5, JSON report) │
+            │                   ├─► airport_weather, airport_forecast, destination_forecast,  │
+            │                   │   public_holidays, get_order ── as role ...-DisruptionGateway ─┤
+            │                   └─► flight_ops ─► Flight Ops agent, READ ONLY (get_order,      │
+            │                         change_options) ── as role ...-DisruptionGateway ────────┤
             └─► flight_ops ─► Flight Ops agent ─► writes* ─ as role TravelConcierge-FlightOpsGateway ─┤
                                                                                               ▼
                        AgentCore Gateway (AWS_IAM) ─► Cedar policy engine (ENFORCE, default deny)
-                                                   ─► Lambda TravelConcierge-Duffel ─► Duffel (token in Secrets Manager)
+                         ├─► Lambda TravelConcierge-Duffel ─► Duffel (token in Secrets Manager)
+                         └─► Lambda TravelConcierge-TripIntel ─► aviationweather.gov (METAR, TAF), Open-Meteo,
+                                                                 Nager.Date, Frankfurter, Duffel places
             * book_offer, change_order, cancel_order, add_bag: quote first, execute only after an explicit yes
 ```
+
+Agents call agents three levels deep on the disruption path (desk → Disruption → read only Flight Ops), all with
+Strands' native `Agent.as_tool()`. The Disruption agent returns Strands structured output (`DisruptionReport`:
+risk, summary, evidence, compensation, rebooking options), which reaches the desk as JSON. It can never write: the
+Flight Ops it calls is built with read tools only and signs as the Disruption identity, which Cedar forbids from
+every write. Rebooking from its options goes back through the desk's quote and confirmation.
 
 Why this shape: a caller turn has to answer in a few seconds, and every agent hop costs 3 to 9 seconds of extra
 model calls. The traveler record and the policy rules are lookups, so they are loaded once per session into the
@@ -36,7 +51,8 @@ What the code enforces, regardless of what the model decides:
 | Rule | Where |
 |---|---|
 | A write runs only after a later user turn whose text starts with an explicit yes | `common.gated` (agent) |
-| Only the Flight Ops identity may call book/change/cancel/add_bag, and only for a verified caller; the desk identity never can | Cedar: `policies/*.cedar` |
+| Only the Flight Ops identity may call book/change/cancel/add_bag, and only for a verified caller; the desk and Disruption identities never can | Cedar: `policies/*.cedar` |
+| The Disruption identity may read one order and price changes, plus the TripIntel tools; nothing else on Duffel | Cedar: `disruption_reads`, `forbid_disruption_writes`, `trip_intel_reads` |
 | Anything no policy permits is denied | Gateway policy engine, ENFORCE mode |
 | Orders are only visible to the traveler they belong to (Duffel order `metadata.actor_id`) | `tools/lambda_handler.py` (`_owned`) |
 | No cancellation when departure is under 24 hours | `tools/lambda_handler.py` (`cancel_order`) |
@@ -70,9 +86,9 @@ It runs locally and needs no API key, but it pulls in torch, so it is kept out o
 | `DUFFEL_TEST_TOKEN` | everything | Test tokens only; the client refuses anything else |
 | `AWS_REGION` | agents | Defaults to `us-east-1` |
 | `MEMORY_ID` | agents | AgentCore Memory id (`agentcore status --type memory`). Empty runs without Memory |
-| `GATEWAY_URL`, `GATEWAY_ROLE_DESK`, `GATEWAY_ROLE_FLIGHT_OPS` | agents | Gateway URL and the two caller roles, from the `agentcore deploy` outputs |
+| `GATEWAY_URL`, `GATEWAY_ROLE_DESK`, `GATEWAY_ROLE_FLIGHT_OPS`, `GATEWAY_ROLE_DISRUPTION` | agents | Gateway URL and the three caller roles, from the `agentcore deploy` outputs |
 | `GUARDRAIL_ID`, `GUARDRAIL_VERSION` | agents | Bedrock Guardrail, from the deploy outputs. Empty runs without it |
-| `MODEL_ID_DESK`, `MODEL_ID_FLIGHT_OPS` | agents | Optional per agent override of the Bedrock inference profile, see [Models](#models) |
+| `MODEL_ID_DESK`, `MODEL_ID_FLIGHT_OPS`, `MODEL_ID_DISRUPTION`, `MODEL_ID_FLIGHT_OPS_READ` | agents | Optional per agent override of the Bedrock inference profile, see [Models](#models) |
 
 AWS credentials come from the normal boto3 chain. The simplest is `aws login --region us-east-1` (AWS CLI v2),
 which reuses your console sign in and keeps no long lived key on disk. An IAM access key via `aws configure` also works.
@@ -155,7 +171,8 @@ agentcore deploy -y                          # uv must be on PATH (it packages t
 ```
 
 Copy the deploy outputs into `.env`: `GatewayTravelDeskGatewayUrlOutput` → `GATEWAY_URL`, `DeskGatewayRoleArn` /
-`FlightOpsGatewayRoleArn` → `GATEWAY_ROLE_DESK` / `GATEWAY_ROLE_FLIGHT_OPS`, `GuardrailIdOutput` /
+`FlightOpsGatewayRoleArn` / `DisruptionGatewayRoleArn` → `GATEWAY_ROLE_DESK` / `GATEWAY_ROLE_FLIGHT_OPS` /
+`GATEWAY_ROLE_DISRUPTION`, `GuardrailIdOutput` /
 `GuardrailVersionOutput` → `GUARDRAIL_ID` / `GUARDRAIL_VERSION`. The runtime gets the same values from `envVars`
 in `agentcore.json`.
 
@@ -165,7 +182,7 @@ in `agentcore.json`.
 ```bash
 uv run python scripts/sync_policies.py       # --check to only report stale statements
 agentcore deploy -y
-uv run python scripts/check_gateway_policies.py            # live: 8 checks, writes only quote
+uv run python scripts/check_gateway_policies.py            # live: 16 checks, writes only quote
 uv run python scripts/check_gateway_policies.py --writes   # also books and cancels a flight for cust_nikos
 ```
 
@@ -173,8 +190,10 @@ A new Gateway tool has to be deployed before a policy that names it: the policy 
 against the Gateway's tool list, so add the tool, deploy, then sync the policy and deploy again.
 
 **Identities.** The Gateway uses AWS_IAM inbound auth. Each agent assumes its own role
-(`TravelConcierge-DeskGateway`, `TravelConcierge-FlightOpsGateway`) and signs its MCP calls with SigV4, so Cedar
-sees `AgentCore::IamEntity::"arn:aws:sts::<account>:assumed-role/<role>"` and can tell the desk from Flight Ops. The
+(`TravelConcierge-DeskGateway`, `TravelConcierge-FlightOpsGateway`, `TravelConcierge-DisruptionGateway`; the read
+only Flight Ops inside the Disruption agent signs as Disruption, see `common.GATEWAY_IDENTITY`) and signs its MCP
+calls with SigV4, so Cedar sees `AgentCore::IamEntity::"arn:aws:sts::<account>:assumed-role/<role>"` and can tell
+the agents apart. The
 traveler (`actor_id`) and `guest_verified` are added to every tool call by `common.call_tool` from the verified
 session, where Cedar reads `context.input.guest_verified` and the Lambda checks `actor_id` against the order's
 Duffel `metadata.actor_id`.
@@ -207,15 +226,40 @@ verification. Press Enter on an empty line to quit. Things to try:
 - `Book a flight to Las Vegas on 2027-01-27`, then `yes` (search, quote, confirmation, booking)
 - `Show me Eleni's trips` (should be declined)
 - `What are my usual seat and meal preferences, and is anything open?` (answered from Memory via the profile)
+- `Is my flight YLNUD2 at risk because of weather?` (desk → Disruption agent → forecasts for ATH and LHR)
+- `What's the weather in Las Vegas when I land?` (JFLNDG is beyond the forecast range: says so and when it opens)
+- `How much is JFLNDG in US dollars?` (fx_convert, ECB rate, indicative)
+
+## Weather, holidays and FX (TripIntel)
+
+`tools/trip_intel.py` is a second Gateway Lambda target, `TripIntel`, kept apart from Duffel so each Lambda holds
+only what it needs and Cedar names its tools separately. All sources are free and keyless; every response is
+normalized before a model sees it.
+
+| Tool | Source | Coverage and limits |
+|---|---|---|
+| `airport_weather` | aviationweather.gov METAR (NOAA) | Worldwide airports (WMO exchange). Flight category, wind, gusts, visibility, ceiling, risk signals |
+| `airport_forecast` | aviationweather.gov TAF | Usually the next 24 to 30 hours; small airports may have no TAF (falls back to `destination_forecast`) |
+| `destination_forecast` | Open-Meteo | Any coordinates, daily, today to 15 days ahead; further out returns `available: false` and the date it opens |
+| `public_holidays` | Nager.Date | 100+ countries |
+| `fx_convert` | Frankfurter (ECB reference rates) | Working days, indicative, not what a card issuer charges |
+| (airport lookup) | Duffel places | IATA → ICAO, coordinates, country; cached per Lambda container |
+
+aviationweather.gov allows 100 requests per minute and asks for a custom User-Agent: the Lambda caches each
+airport's METAR/TAF for 10 minutes, sends `travel-concierge/0.1 (+github.com/fakiolinho/travel-concierge)`, and
+uses only the documented `ids` and `format` parameters. Risk levels come from plain rules in code (`signals`): LIFR,
+wind or gusts of 35 kt, thunder, freezing precipitation or snow are high; IFR, 25 kt, heavy rain are medium.
 
 ## Models
 
-Both agents run on `us.anthropic.claude-sonnet-5-5`, set in `MODELS` in `agents/common.py`:
+Set in `MODELS` in `agents/common.py`:
 
-| Agent | Why Sonnet |
-|---|---|
-| Travel Desk | Holds the conversation, picks tools, applies policy and asks for confirmation. Mistakes here cost the most. |
-| Flight Ops | Makes the writes. It must pass the right ids and stop at the quote. |
+| Agent | Model | Why |
+|---|---|---|
+| Travel Desk | Sonnet 5.5 | Holds the conversation, picks tools, applies policy and asks for confirmation. Mistakes here cost the most. |
+| Flight Ops | Sonnet 5.5 | Makes the writes. It must pass the right ids and stop at the quote. |
+| Disruption | Haiku 5.5 | Judges risk from signals the Lambda already computed. Strands structured output falls back to forced tool choice, which Sonnet 5.5 rejects (400) and Haiku 5.5 accepts. |
+| Flight Ops (read only, inside Disruption) | Haiku 5.5 | Looks up change options; no writes. |
 
 Traveler Profile and Policy used to be Haiku agents. They are now plain lookups loaded into the desk prompt, which
 was faster than any model. Measured per call on Bedrock: Sonnet 5.5 and Haiku 5.5 both take about 1 to 1.4s for a
@@ -223,7 +267,7 @@ short answer, and lowering the effort setting made no measurable difference, so 
 Opus class models were tried first and are slower and pricier than this workload needs. Anthropic list prices per
 million input/output tokens: Opus 5.5 $4/$20, Sonnet 5.5 $2/$10, Haiku 5.5 $0.10/$0.50 (Bedrock pricing differs).
 
-Override either agent with `MODEL_ID_DESK` or `MODEL_ID_FLIGHT_OPS` in `.env`, e.g.
+Override any agent with `MODEL_ID_<ROLE>` in `.env` (`DESK`, `FLIGHT_OPS`, `DISRUPTION`, `FLIGHT_OPS_READ`), e.g.
 `MODEL_ID_FLIGHT_OPS=us.anthropic.claude-haiku-5-5`.
 Like a prompt change, a model change needs an eval run before it is merged.
 
@@ -303,6 +347,22 @@ time to the first streamed words):
 - Possible next steps: provisioned concurrency for the Lambda (removes cold starts, costs per hour), apply the
   guardrail to output only on read turns, and keep a warm Runtime session per caller.
 
+Disruption agent turns (desk → Disruption → tools), measured 2026-10-18, warm session unless noted:
+
+| Question | Local (total) | Runtime (first words / total) |
+|---|---|---|
+| Is YLNUD2 at risk because of weather? (10 days out: daily forecasts) | 17.8 | 12.7 / 24.7 (fresh microVM) |
+| Weather in Las Vegas when I land? (beyond forecast range) | 13.8 | 1.9 / 12.2 |
+| JFLNDG in US dollars (fx_convert, no agent hop) | 5.6 | 1.5 / 4.3 |
+| Status of 5Y4HM3 (ordinary turn, cust_eleni) | 6.3 | 5.0 / 6.0 |
+
+- The Disruption step itself takes 8 to 10s: two Haiku calls around one parallel round of TripIntel calls, plus the
+  structured report. The desk's opening sentence streams first, so the caller hears something within about 1.5s.
+- A cold TripIntel Lambda pays about 7s on its first call (container start, Secrets Manager, Duffel airport lookup).
+- Ordinary turns are 0.5 to 1s slower than in the table above: the desk prompt and tool list grew by two tools.
+- An earlier version looked the order up through the read only Flight Ops agent (an extra agent hop, 7.4s); the
+  Disruption agent now calls `get_order` directly and uses Flight Ops only for rebooking options.
+
 ## Acceptance suite
 
 `evals/acceptance.jsonl` holds scripted multi turn conversations (fixed user messages, about 20 cases across happy
@@ -333,7 +393,7 @@ suite grades the current code and the migrated one:
 
 The run exits non zero if any case fails, and writes `evals/results/<timestamp>-<sha>.json` (gitignored). The answer
 cache is off during runs (`ANSWER_CACHE=off`): a cached turn has no spans to grade. Cases tagged `requires` are
-skipped while the desk lacks those tools (the disruption cases until the Disruption agent lands).
+skipped while the desk lacks those tools (e.g. the disruption cases on a desk without `disruption`).
 
 **Strands Decider 2B** (`--decider`) asks the four PLAN.md gate questions as yes/no (`noul`) questions in one
 request per case: prices from tool results, history claims backed by the record, writes confirmed, in scope. It is
@@ -361,6 +421,8 @@ uv run python agents/common.py            # confirmation gate
 uv run python tools/duffel.py             # Duffel normalizers
 uv run python agents/traveler_profile.py  # history summary
 uv run python tools/lambda_handler.py     # Gateway Lambda: ownership, 24h rule, dispatch
+uv run python tools/trip_intel.py         # TripIntel: visibility/ceiling parsing, flight category, risk, forecast range, FX
+uv run python agents/disruption.py        # Disruption report schema
 uv run python scripts/sync_policies.py --check   # Cedar files and agentcore.json agree
 ```
 
@@ -386,14 +448,17 @@ agents/                runtime code (deployed as a CodeZip)
   travel_desk.py       desk agent + local REPL
   runtime_app.py       AgentCore Runtime entrypoint
   flight_ops.py        model facing tools (thin Gateway calls) + Flight Ops agent for writes
+  disruption.py        Disruption agent (weather risk, structured report) + read only Flight Ops, as Strands tools
   traveler_profile.py  traveler record: bookings via Gateway + Memory records (plain code, loaded per session)
   policy.py            desk policy rules (plain text, in the desk prompt)
   common.py            models + guardrail, tracing, session, Gateway client, answer cache, confirmation gate
   pyproject.toml       runtime dependencies
 tools/
   lambda_handler.py    Gateway Lambda target "Duffel": all tools, ownership, 24h rule
+  trip_intel.py        Gateway Lambda target "TripIntel": METAR, TAF, Open-Meteo, holidays, FX
   duffel.py            Duffel client + normalizers
-policies/              Cedar policies (reads, writes, forbid_desk_writes)
+policies/              Cedar policies (reads, writes, forbid_desk_writes, disruption_reads,
+                       forbid_disruption_writes, trip_intel_reads)
 agentcore/
   agentcore.json       Memory, Gateway + Lambda target + tool schemas, policy engine, Runtime
   cdk/lib/cdk-stack.ts Gateway caller roles, Bedrock Guardrail, runtime permissions
@@ -429,6 +494,11 @@ Shortcuts are marked `# ponytail:` in the code, each naming its limit and upgrad
 - Resource ids (Gateway URL, roles, guardrail) are copied into `.env` and the runtime `envVars` by hand.
 - The profile lists all of a traveler's Memory records rather than searching them, which is fine at about
   60 records per traveler.
+- METAR/TAF and airport lookups are cached per Lambda container, not shared. Weather risk rules are simple
+  thresholds, not an airline's operational model. Disruption risk only uses weather (no ATC flow or strike data).
+- Memory learns from test conversations too: asking for prices in dollars made Memory record "Wants prices shown
+  in US dollars" for cust_marios, and the desk now converts amounts for him unprompted. Clean such records before
+  using Memory output as eval ground truth.
 
 ## Roadmap
 

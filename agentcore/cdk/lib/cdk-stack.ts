@@ -146,6 +146,8 @@ export class AgentCoreStack extends Stack {
     for (const [id, roleName] of [
       ['DeskGatewayRole', 'TravelConcierge-DeskGateway'],
       ['FlightOpsGatewayRole', 'TravelConcierge-FlightOpsGateway'],
+      // Disruption agent and its read only Flight Ops: TripIntel reads plus get_order/change_options, never writes.
+      ['DisruptionGatewayRole', 'TravelConcierge-DisruptionGateway'],
     ] as const) {
       const role = new iam.Role(this, id, {
         roleName,

@@ -40,6 +40,10 @@
         {
           "name": "GUARDRAIL_VERSION",
           "value": "1"
+        },
+        {
+          "name": "GATEWAY_ROLE_DISRUPTION",
+          "value": "arn:aws:iam::437987386879:role/TravelConcierge-DisruptionGateway"
         }
       ],
       "instrumentation": {
@@ -78,7 +82,7 @@
   "agentCoreGateways": [
     {
       "name": "TravelDeskGateway",
-      "description": "Duffel flight tools for the Travel Desk (reads) and Flight Ops (writes), Cedar enforced",
+      "description": "Duffel flight tools and TripIntel (weather, holidays, FX) for the Travel Desk, Flight Ops and Disruption agents, Cedar enforced",
       "targets": [
         {
           "name": "Duffel",
@@ -346,6 +350,123 @@
               ]
             }
           }
+        },
+        {
+          "name": "TripIntel",
+          "targetType": "lambda",
+          "toolDefinitions": [
+            {
+              "name": "airport_weather",
+              "description": "Current METAR at an airport, normalized, with flight category and disruption risk signals.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "airport_code": {
+                    "type": "string",
+                    "description": "IATA airport code, e.g. LHR"
+                  }
+                },
+                "required": ["airport_code"]
+              }
+            },
+            {
+              "name": "airport_forecast",
+              "description": "TAF at an airport (next 24 to 30 hours), period by period with risk.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "airport_code": {
+                    "type": "string",
+                    "description": "IATA airport code, e.g. LHR"
+                  }
+                },
+                "required": ["airport_code"]
+              }
+            },
+            {
+              "name": "destination_forecast",
+              "description": "Open-Meteo daily forecast at an airport's location, today to 15 days ahead.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "airport_code": {
+                    "type": "string",
+                    "description": "IATA airport code, e.g. LHR"
+                  },
+                  "date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  }
+                },
+                "required": ["airport_code", "date"]
+              }
+            },
+            {
+              "name": "public_holidays",
+              "description": "Public holidays in the airport's country between two dates.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "airport_code": {
+                    "type": "string",
+                    "description": "IATA airport code, e.g. LHR"
+                  },
+                  "start_date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  },
+                  "end_date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                  }
+                },
+                "required": ["airport_code", "start_date", "end_date"]
+              }
+            },
+            {
+              "name": "fx_convert",
+              "description": "Convert an amount with the latest ECB reference rate (Frankfurter), indicative.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "string",
+                    "description": "decimal amount as a string"
+                  },
+                  "from_currency": {
+                    "type": "string",
+                    "description": "ISO code"
+                  },
+                  "to_currency": {
+                    "type": "string",
+                    "description": "ISO code"
+                  }
+                },
+                "required": ["amount", "from_currency", "to_currency"]
+              }
+            }
+          ],
+          "compute": {
+            "host": "Lambda",
+            "implementation": {
+              "language": "Python",
+              "path": "tools",
+              "handler": "trip_intel.handler"
+            },
+            "pythonVersion": "PYTHON_3_13",
+            "timeout": 20,
+            "memorySize": 256,
+            "iamPolicy": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "secretsmanager:GetSecretValue",
+                  "Resource": "arn:aws:secretsmanager:us-east-1:437987386879:secret:travel-concierge/duffel-test-token-*"
+                }
+              ]
+            }
+          }
         }
       ],
       "authorizerType": "AWS_IAM",
@@ -385,6 +506,30 @@
           "validationMode": "FAIL_ON_ANY_FINDINGS",
           "enforcementMode": "ACTIVE",
           "authorizationPhase": "INITIATE"
+        },
+        {
+          "validationMode": "FAIL_ON_ANY_FINDINGS",
+          "enforcementMode": "ACTIVE",
+          "authorizationPhase": "INITIATE",
+          "name": "disruption_reads",
+          "sourceFile": "policies/disruption_reads.cedar",
+          "statement": "// The Disruption identity (Disruption agent and the read only Flight Ops it calls) may read one order and price\n// date changes, nothing else on Duffel. Ownership of the order is still checked by the Lambda.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___get_order\",\n    AgentCore::Action::\"Duffel___change_options\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n"
+        },
+        {
+          "validationMode": "FAIL_ON_ANY_FINDINGS",
+          "enforcementMode": "ACTIVE",
+          "authorizationPhase": "INITIATE",
+          "name": "forbid_disruption_writes",
+          "sourceFile": "policies/forbid_disruption_writes.cedar",
+          "statement": "// The Disruption identity never writes, whatever other permits say: rebooking goes back through the desk's quote\n// and confirmation with the Flight Ops identity.\nforbid (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"Duffel___book_offer\",\n    AgentCore::Action::\"Duffel___change_order\",\n    AgentCore::Action::\"Duffel___cancel_order\",\n    AgentCore::Action::\"Duffel___add_bag\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n"
+        },
+        {
+          "validationMode": "FAIL_ON_ANY_FINDINGS",
+          "enforcementMode": "ACTIVE",
+          "authorizationPhase": "INITIATE",
+          "name": "trip_intel_reads",
+          "sourceFile": "policies/trip_intel_reads.cedar",
+          "statement": "// TripIntel (public weather, holidays, FX; read only, no traveler data): any of the three agent identities.\n// Deployed after the TripIntel target exists: the policy engine validates actions against the Gateway's tools.\npermit (\n  principal is AgentCore::IamEntity,\n  action in [\n    AgentCore::Action::\"TripIntel___airport_weather\",\n    AgentCore::Action::\"TripIntel___airport_forecast\",\n    AgentCore::Action::\"TripIntel___destination_forecast\",\n    AgentCore::Action::\"TripIntel___public_holidays\",\n    AgentCore::Action::\"TripIntel___fx_convert\"\n  ],\n  resource == AgentCore::Gateway::\"arn:aws:bedrock-agentcore:us-east-1:437987386879:gateway/travelconcierge-traveldeskgateway-a4bksxcakf\"\n)\nwhen {\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DeskGateway\" ||\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-FlightOpsGateway\" ||\n  principal.id == \"arn:aws:sts::437987386879:assumed-role/TravelConcierge-DisruptionGateway\"\n};\n"
         }
       ]
     }

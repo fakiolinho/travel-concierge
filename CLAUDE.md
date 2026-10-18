@@ -8,6 +8,8 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
 - Python 3.11+, `uv` for deps. Strands Agents SDK, `bedrock-agentcore`. AgentCore CLI `@aws/agentcore` (npm, Node 20+)
   for infra; the deprecated Python starter toolkit is not used.
 - Flights: Duffel API, test token only (`duffel_test_...`). Airline `ZZ` (Duffel Airways) for all evals.
+- Weather/holidays/FX (TripIntel Lambda): aviationweather.gov METAR/TAF (max 100 req/min, custom User-Agent, documented
+  params only, never the user's email), Open-Meteo, Nager.Date, Frankfurter. All keyless.
 - Memory: one AgentCore Memory resource, strategies: UserPreference, Semantic, Summary. actor_id = verified customer id.
 - Judges: AgentCore Evaluations (LLM as a judge) + Strands Decider (`strands-decider`, pin model `StrandsAgents/strands-decider-2B-hobson-v19`).
   Runs locally, no API key. Lives in the `evals` dependency group so torch stays out of the agent runtime.
@@ -15,10 +17,10 @@ AgentCore Evaluations + Strands Decider for evals. See PLAN.md for the full desi
   Secret values (the Duffel token) are put by `scripts/prepare_gateway.py`, never in a template.
 
 ## Layout
-- `agents/` desk agent (`travel_desk.py`) with direct Duffel read tools; Flight Ops agent for writes (`flight_ops.py`); traveler record loader (`traveler_profile.py`) and policy rules (`policy.py`), both loaded into the desk prompt per session. Latency target: 2 to 3s per turn, so no agent hop for lookups.
+- `agents/` desk agent (`travel_desk.py`) with direct Duffel read tools; Flight Ops agent for writes (`flight_ops.py`); traveler record loader (`traveler_profile.py`) and policy rules (`policy.py`), both loaded into the desk prompt per session. Latency target: 2 to 3s per turn, so no agent hop for lookups. Disruption agent (`disruption.py`) for weather/disruption questions only; it never writes. Use Strands built ins (`Agent.as_tool`, structured output, ToolContext) over hand written machinery.
 - `agents/` is also the AgentCore Runtime code (`runtime_app.py`, `agents/pyproject.toml`); every Duffel call goes
   through the Gateway as the calling agent's own IAM role (`common.call_tool`).
-- `tools/` Duffel client + the Gateway Lambda (`lambda_handler.py`). Normalize Duffel JSON to our schema before it reaches any LLM.
+- `tools/` Duffel client + the Gateway Lambdas (`lambda_handler.py` for Duffel, `trip_intel.py` for TripIntel). Normalize Duffel JSON to our schema before it reaches any LLM.
   Order ownership = Duffel order `metadata.actor_id`, checked in the Lambda.
 - `policies/` Cedar policies. Default deny. Only Flight Ops principal may call write tools. Edit the `.cedar` file,
   then `scripts/sync_policies.py`; deploy a new tool before a policy that names it.

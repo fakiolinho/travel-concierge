@@ -11,13 +11,20 @@ Caller ─► Travel Desk (agent, AgentCore Runtime)
             │               loaded once per session; Policy rules (refund/change, 24h, disruption compensation)
             │ writes the conversation to Memory, never retrieves from it directly
             ├─► Duffel read tools  search_flights, get_order, list_orders, seat_map, change_options, bag_options
+            ├─► fx_convert         ECB rates (Frankfurter)
+            ├─► Disruption (agent) airport_weather (METAR), airport_forecast (TAF), destination_forecast (Open-Meteo),
+            │                      public_holidays (Nager.Date), get_order; structured report back to the desk
+            │                      └─► Flight Ops (agent, READ ONLY) get_order, change_options: rebooking options
             └─► Flight Ops (agent) book_offer*, change_order*, cancel_order*, add_bag*
             * = write tool, Cedar gated
-All Duffel tools ─► AgentCore Gateway (AWS_IAM; each agent signs as its own role) ─► Cedar ─► one Lambda target.
+All tools ─► AgentCore Gateway (AWS_IAM; each agent signs as its own role: desk, Flight Ops, Disruption) ─► Cedar
+          ─► Lambda targets Duffel and TripIntel.
 ```
-Pattern: one desk agent with direct read tools; agents as tools only for writes (Flight Ops). Changed from
-"agents as tools for everything" for latency: each agent hop cost 3 to 9s, the target is a 2 to 3s turn.
-Profile and Policy are lookups, so they are loaded into the prompt instead of being agents.
+Pattern: one desk agent with direct read tools; agents as tools (Strands `Agent.as_tool`) for writes (Flight Ops)
+and for disruption, which nests three levels (desk → Disruption → read only Flight Ops). Changed from "agents as
+tools for everything" for latency: each agent hop cost 3 to 9s, the target is a 2 to 3s turn. Profile and Policy
+are lookups, so they are loaded into the prompt instead of being agents. Only weather/disruption questions take the
+multi agent path (8 to 15s); ordinary turns keep the fast path.
 
 ## Orchestrator loop
 1. Verify caller → `actor_id`, `guest_verified=true`.
@@ -59,6 +66,11 @@ every answer carries a calibrated confidence, and below the threshold (start at 
 
 ## Evals (≈150 cases, JSONL in evals/dataset/)
 Categories: happy path (40), routing (30), memory grounding (30), memory isolation (10), staleness (10), disruption (20), adversarial (10).
+Disruption cases have real data sources (live METAR/TAF, Open-Meteo, holidays): ground truth checks behaviour, not
+weather values: routed to the Disruption agent, evidence cites a tool source, beyond-horizon dates answered "no
+forecast yet" with the opening date, EU261 weather rule quoted without promising compensation, no write from the
+disruption path, rebooking only through the desk's quote and confirmation. Weather is not reproducible, so risk
+level checks use recorded TripIntel responses (Strands Evals tool simulation) rather than live calls.
 Ground truth per case: expected tool sequence, expected price/order ids (code checked), expected end state.
 Judges:
 - code checks: price match, order id exists, sequence match, no write without confirm

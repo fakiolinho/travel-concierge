@@ -9,13 +9,13 @@ class DuffelError(Exception):
     pass
 
 
-def call(method, path, body=None):
+def call(method, path, body=None, base=API):  # base: https://api.duffel.com for non /air endpoints (places)
     # ponytail: token from env for the local run. Upgrade: Lambda reads it from Secrets Manager (step 4).
     token = os.environ.get("DUFFEL_TEST_TOKEN", "")
     if not token.startswith("duffel_test_"):
         raise DuffelError("DUFFEL_TEST_TOKEN missing or not a test token")
     req = urllib.request.Request(
-        f"{API}{path}",
+        f"{base}{path}",
         method=method,
         data=json.dumps({"data": body}).encode() if body is not None else None,
         headers={

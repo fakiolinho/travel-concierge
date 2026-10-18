@@ -59,6 +59,28 @@ results = [
         denied(call("flight_ops", "cust_eleni", "cancel_order", order_id=marios_order)),
     ),
 ]
+
+
+def intel(role, name, **args):
+    common.start("cust_marios", "policy-check")
+    return common.call_tool(role, name, target="TripIntel", **args)
+
+
+results += [
+    ("disruption reads airport weather (TripIntel)", intel("disruption", "airport_weather", airport_code="LHR").get("icao") == "EGLL"),
+    ("desk converts currency (TripIntel)", intel("desk", "fx_convert", amount="100", from_currency="EUR", to_currency="USD").get("to") == "USD"),
+    ("disruption reads its traveler's order", not denied(call("disruption", "cust_marios", "get_order", order_id=marios_order))),
+    ("disruption cannot search flights (default deny)", denied(call("disruption", "cust_marios", "search_flights", origin="ATH", destination="LHR", departure_date=SEARCH_DATE))),
+]  # fmt: skip
+for write, args in [
+    ("book_offer", {"offer_id": offer["offer_id"]}),
+    ("change_order", {"order_id": marios_order, "change_offer_id": "oco_x"}),
+    ("cancel_order", {"order_id": marios_order}),
+    ("add_bag", {"order_id": marios_order, "service_id": "x"}),
+]:
+    r = call("disruption", "cust_marios", write, **args)
+    # Must be Cedar's explicit forbid, not a Lambda error on the dummy ids.
+    results.append((f"disruption {write} is denied by Cedar", "forbid_disruption_writes" in str(r.get("error"))))
 if "--writes" in sys.argv:
     nikos_offer = call(
         "desk", "cust_nikos", "search_flights", origin="ATH", destination="BCN", departure_date=SEARCH_DATE
