@@ -185,9 +185,11 @@ def check_cross_actor(case, run):
 
 
 def check_amounts(case, run):
-    """Every money amount in an answer appears in some tool result of the conversation (PLAN.md: prices are read
-    from tool results, never computed or recalled)."""
+    """Every money amount in an answer appears in some tool result of the conversation, or in the bookings record the
+    desk loaded through the Gateway at session start (PLAN.md: prices are read from tool results, never computed or
+    recalled). Memory is not a source: its facts can hold stale prices (the staleness cases)."""
     seen = set().union(*(amounts(c["output"]) for t in run["turns"] for c in t["tools"])) if run["turns"] else set()
+    seen |= amounts(run.get("record", ""))
     typed = set().union(*(amounts(t["user"]) for t in case["turns"]))
     loose = sorted({a for t in run["turns"] for a in amounts(t["answer"])} - seen - typed)
     return not loose, f"amounts not in tool results: {loose}" if loose else "all amounts from tool results"
@@ -875,7 +877,34 @@ def run_judges(args, cases, runs, results, common, Case, Experiment, Evaluator):
             (refusal, [Judge("refused", RefusalEvaluator(model=jm))]),  # 1.0 = the agent refused (wanted here)
         ]
     if args.agentcore:
-        from bedrock_agentcore.evaluation import create_strands_evaluator
+        from bedrock_agentcore.evaluation.integrations.strands_agents_evals.evaluator import (
+            StrandsEvalsAgentCoreEvaluator,
+        )
+        from bedrock_agentcore.evaluation.span_to_adot_serializer import convert_strands_to_adot
+        from strands_evals.types import EvaluationOutput
+
+        class AgentCoreEval(StrandsEvalsAgentCoreEvaluator):
+            """What create_strands_evaluator builds, reading categorical results too: a pass/fail evaluator returns a
+            label and no value (the stock wrapper scores those 0.0), and an evaluator error is reported as such."""
+
+            def evaluate(self, ec):
+                spans = convert_strands_to_adot(ec.actual_trajectory)
+                try:
+                    resp = self.client.evaluate(evaluatorId=self.evaluator_id, evaluationInput={"sessionSpans": spans})
+                except Exception as e:
+                    return [EvaluationOutput(score=0.0, test_pass=False, reason=f"API error: {e}", label="error")]
+                outs = []
+                for x in resp["evaluationResults"]:
+                    if x.get("errorCode"):
+                        why = f"{x['errorCode']}: {x.get('errorMessage', '')}"
+                        outs.append(EvaluationOutput(score=0.0, test_pass=False, reason=why, label="error"))
+                        continue
+                    label, value = x.get("label"), x.get("value")
+                    if value is None:
+                        value = {"pass": 1.0, "fail": 0.0}.get((label or "").lower(), 0.0)
+                    outs.append(EvaluationOutput(score=float(value), test_pass=value >= self.test_pass_score,
+                                                 reason=x.get("explanation", ""), label=label))  # fmt: skip
+                return outs
 
         def raw(c, run):
             return run["raw"]
@@ -884,7 +913,7 @@ def run_judges(args, cases, runs, results, common, Case, Experiment, Evaluator):
             (
                 lambda c: True,
                 [
-                    Judge(f"agentcore:{i.split('/')[-1]}", create_strands_evaluator(i, region=common.REGION), traj=raw)
+                    Judge(f"agentcore:{i.split('/')[-1]}", AgentCoreEval(i, region=common.REGION), traj=raw)
                     for i in AGENTCORE_BUILTINS + agentcore_custom_ids()
                 ],
             )
@@ -910,13 +939,13 @@ def run_judges(args, cases, runs, results, common, Case, Experiment, Evaluator):
 
 
 def agentcore_custom_ids():
-    """Custom AgentCore evaluators deployed with the CLI (agentcore.json `evaluators`), as ARNs, plus any extra ids in
+    """Custom AgentCore evaluators deployed with the CLI (agentcore.json `evaluators`), by id, plus any extra ids in
     AGENTCORE_EVALUATORS."""
     extra = [x.strip() for x in os.environ.get("AGENTCORE_EVALUATORS", "").split(",") if x.strip()]
     try:
         state = json.loads((ROOT / "agentcore/.cli/deployed-state.json").read_text())
         res = state["targets"]["default"]["resources"].get("evaluators", {})
-        arns = [v.get("evaluatorArn") for v in res.values() if v.get("evaluatorArn")]
+        arns = [v.get("evaluatorId") for v in res.values() if v.get("evaluatorId")]  # the Evaluate API takes ids
     except (FileNotFoundError, KeyError, ValueError):
         arns = []
     return arns + extra
